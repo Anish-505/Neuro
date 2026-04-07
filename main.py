@@ -1,6 +1,8 @@
 """
 Unified NeuroMentor App
 """
+from kivy.metrics import sp
+
 
 # ============================================================
 # File: theme.py
@@ -60,15 +62,15 @@ class theme:
     # FONT SIZES
     # ============================================================
 
-    FONT_TITLE_LARGE = 28
-    FONT_TITLE_MEDIUM = 22
-    FONT_HEADING_LARGE = 24
-    FONT_HEADING_MEDIUM = 18
-    FONT_BODY_LARGE = 16
-    FONT_BODY_REGULAR = 14
-    FONT_BODY_SMALL = 12
-    FONT_DISPLAY_LARGE = 72
-    FONT_TIMER = 24
+    FONT_TITLE_LARGE = sp(32)
+    FONT_TITLE_MEDIUM = sp(26)
+    FONT_HEADING_LARGE = sp(28)
+    FONT_HEADING_MEDIUM = sp(22)
+    FONT_BODY_LARGE = sp(20)
+    FONT_BODY_REGULAR = sp(18)
+    FONT_BODY_SMALL = sp(16)
+    FONT_DISPLAY_LARGE = sp(80)
+    FONT_TIMER = sp(28)
 
 
     # ============================================================
@@ -251,6 +253,8 @@ class RFClassifier:
         Returns:
             str label ('Baseline', 'Stressed', 'Focused') or 'Unknown'
         """
+        if not _HAS_SKLEARN:
+            return "Baseline"
         if not self._is_trained or self._clf is None or self._scaler is None:
             return 'Unknown'
 
@@ -1885,7 +1889,7 @@ class BreathingWidget(BoxLayout):
         # Instruction label
         self._instruction_lbl = Label(
             text='Ready',
-            font_size=40,
+            font_size=sp(40),
             color=theme.TEAL,
             bold=True,
             size_hint_y=0.4,
@@ -2351,7 +2355,7 @@ class StroopWidget(BoxLayout):
         # Display label (word or math problem)
         self._display_lbl = Label(
             text='BLUE',
-            font_size=60,
+            font_size=sp(60),
             bold=True,
             color=(0, 0, 1, 1),
             size_hint_y=0.35,
@@ -2400,7 +2404,7 @@ class StroopWidget(BoxLayout):
         for c in self._colors:
             btn = Button(
                 text=c,
-                font_size=12,
+                font_size=sp(12),
                 bold=True,
                 background_color=self._color_map[c],
                 color=(0, 0, 0, 1),
@@ -3880,7 +3884,7 @@ class LoginScreen(FloatLayout):
         # Title
         title = Label(
             text='NEURO-MENTOR',
-            font_size=32,
+            font_size=sp(32),
             bold=True,
             color=theme.GOLD,
             size_hint_y=None,
@@ -4398,7 +4402,7 @@ class SidebarNavigation(BoxLayout):
         # LED circle
         led = Label(
             text='\u25cf',
-            font_size=16,
+            font_size=sp(16),
             color=(0.2, 0.2, 0.2, 1),
             size_hint_x=None,
             width=20,
@@ -4597,6 +4601,18 @@ class NeuroMentorApp(App):
     """Main NeuroMentor Kivy Application."""
 
     def build(self):
+        from kivy.utils import platform
+        if platform == "android":
+            try:
+                from android.permissions import request_permissions, Permission
+                request_permissions([
+                    Permission.BLUETOOTH_SCAN,
+                    Permission.BLUETOOTH_CONNECT,
+                    Permission.ACCESS_FINE_LOCATION
+                ])
+            except ImportError:
+                pass
+
         # Lock orientation to portrait on Android via jnius
         try:
             from jnius import autoclass
