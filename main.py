@@ -2,6 +2,30 @@
 Unified NeuroMentor App
 """
 from kivy.metrics import sp
+from kivy.uix.label import Label
+from kivy.uix.button import Button
+from kivy.uix.behaviors import ButtonBehavior
+
+_orig_label_init = Label.__init__
+def _new_label_init(self, **kwargs):
+    _orig_label_init(self, **kwargs)
+    self.size_hint_y = None
+    self.bind(width=lambda inst, val: setattr(inst, 'text_size', (inst.width, None)))
+    self.bind(texture_size=lambda inst, val: setattr(inst, 'height', inst.texture_size[1]))
+    if isinstance(self, ButtonBehavior) or isinstance(self, Button):
+        self.halign = 'center'
+        self.valign = 'middle'
+Label.__init__ = _new_label_init
+
+_orig_button_init = Button.__init__
+def _new_button_init(self, **kwargs):
+    _orig_button_init(self, **kwargs)
+    self.size_hint_y = None
+    self.bind(width=lambda inst, val: setattr(inst, 'text_size', (inst.width, None)))
+    self.bind(texture_size=lambda inst, val: setattr(inst, 'height', inst.texture_size[1]))
+    self.halign = 'center'
+    self.valign = 'middle'
+Button.__init__ = _new_button_init
 
 
 # ============================================================
@@ -63,8 +87,8 @@ class theme:
     # ============================================================
 
     FONT_TITLE_LARGE = sp(32)
-    FONT_TITLE_MEDIUM = sp(26)
-    FONT_HEADING_LARGE = sp(28)
+    FONT_TITLE_MEDIUM = sp(28)
+    FONT_HEADING_LARGE = sp(26)
     FONT_HEADING_MEDIUM = sp(22)
     FONT_BODY_LARGE = sp(20)
     FONT_BODY_REGULAR = sp(18)
@@ -1455,8 +1479,8 @@ class GradientCard(BoxLayout):
     """A card with a soft gradient background, rounded corners, and a drop shadow."""
     def __init__(self, accent_color=None, **kwargs):
         kwargs.setdefault('orientation', 'vertical')
-        kwargs.setdefault('padding', 15)
-        kwargs.setdefault('spacing', 8)
+        kwargs.setdefault('padding', [12, 12, 12, 12])
+        kwargs.setdefault('spacing', 6)
         self.accent_color = accent_color
         self.radius = kwargs.pop('radius', 12)
         super().__init__(**kwargs)
@@ -1533,7 +1557,7 @@ class EegGraph(BoxLayout):
     max_y = NumericProperty(4095)
 
     def __init__(self, **kwargs):
-        super().__init__(orientation='vertical', **kwargs)
+        super().__init__(orientation='vertical', padding=[40, 10, 10, 10], **kwargs)
         self._data = deque(maxlen=256)
 
         # Title label
@@ -1613,10 +1637,10 @@ class _GraphCanvas(Widget):
         if not self._data or self.width <= 0 or self.height <= 0:
             return
 
-        x0 = self.x + 5
-        y0 = self.y + 5
-        w = self.width - 10
-        h = self.height - 10
+        x0 = self.x + 40
+        y0 = self.y + 10
+        w = self.width - 50
+        h = self.height - 20
 
         # Draw grid lines
         with self.canvas:
@@ -2641,17 +2665,7 @@ class DashboardScreen(BoxLayout):
             height=80,
             padding=[20, 15]
         )
-        status_title = Label(
-            text='LIVE STATUS',
-            font_size=theme.FONT_BODY_SMALL,
-            color=theme.TEXT_SECONDARY,
-            size_hint_y=None,
-            height=18,
-            halign='left',
-            valign='middle',
-        )
-        status_title.bind(size=status_title.setter('text_size'))
-        status_card.add_widget(status_title)
+        # Removed LIVE STATUS text to prevent overlapping
         status_value = Label(
             text='OFFLINE',
             font_size=theme.FONT_HEADING_MEDIUM,
@@ -2665,8 +2679,8 @@ class DashboardScreen(BoxLayout):
 
         # Stat cards row
         stats_row = BoxLayout(spacing=15, size_hint_y=None, height=100)
-        stats_row.add_widget(self._build_stat_card('STRESS THRESHOLD', 'N/A', theme.RED))
-        stats_row.add_widget(self._build_stat_card('FOCUS THRESHOLD', 'N/A', theme.TEAL))
+        stats_row.add_widget(self._build_stat_card('STRESS', 'N/A', theme.RED))
+        stats_row.add_widget(self._build_stat_card('FOCUS', 'N/A', theme.TEAL))
         stats_row.add_widget(self._build_stat_card('NEURO XP', '0', theme.GOLD))
         self.add_widget(stats_row)
 
@@ -2983,22 +2997,28 @@ class CalibrationScreen(BoxLayout):
 
         # Execute Sequence Button
         self._seq_btn_box = BoxLayout(size_hint_y=None, height=60, padding=[20, 10])
+        self._seq_btn_box.bind(minimum_height=self._seq_btn_box.setter('height'))
         self._execute_btn = ShadowButton(
             text='EXECUTE FULL SEQUENCE (1 HOUR)',
             font_size=theme.FONT_BODY_LARGE,
             bold=True,
             background_color=theme.GOLD,
             color=theme.BG_DARK,
+            halign='center',
+            valign='middle',
+            height=sp(48),
         )
+        self._execute_btn.bind(size=lambda inst, val: setattr(inst, 'text_size', (inst.width - 20, None)))
         self._execute_btn.bind(on_press=lambda *a: self._start_sequence())
         self._seq_btn_box.add_widget(self._execute_btn)
         self.add_widget(self._seq_btn_box)
 
         # Control bar
-        control_bar = GradientCard(
+        control_bar = BoxLayout(
             orientation='horizontal',
-            size_hint_y=None, height=50, padding=[15, 5], spacing=10,
+            size_hint_y=None, height=50, spacing=10,
         )
+        control_bar.bind(minimum_height=control_bar.setter('height'))
 
         self._status_lbl = Label(
             text='STATUS: IDLE',
@@ -3016,7 +3036,7 @@ class CalibrationScreen(BoxLayout):
             font_size=theme.FONT_HEADING_MEDIUM,
             bold=True,
             color=theme.GOLD,
-            size_hint_x=0.25,
+            size_hint_x=0.4,
         )
         control_bar.add_widget(xp_lbl)
 
@@ -3047,25 +3067,25 @@ class CalibrationScreen(BoxLayout):
         cards_row = BoxLayout(spacing=15)
 
         cards_row.add_widget(self._build_task_card(
-            'BASELINE', 'Relaxation', 'Breathing Exercises',
+            'BASELINE', 'Relaxation',
             theme.GOLD, 'baseline'
         ))
         cards_row.add_widget(self._build_task_card(
-            'STRESS', 'High Load', 'Math / Stroop',
+            'STRESS', 'High Load',
             theme.RED, 'stress'
         ))
         cards_row.add_widget(self._build_task_card(
-            'FOCUS', 'Flow State', 'Tracking / Reading',
+            'FOCUS', 'Flow State',
             theme.TEAL, 'focus'
         ))
         self._content_area.add_widget(cards_row)
 
-    def _build_task_card(self, title, subtitle, desc, accent, task_id):
-        card = GradientCard(padding=[15, 15], spacing=5)
+    def _build_task_card(self, title, subtitle, accent, task_id):
+        card = GradientCard()
 
         t = Label(
             text=title,
-            font_size=theme.FONT_HEADING_MEDIUM,
+            font_size=sp(13),
             bold=True,
             color=theme.GOLD,
             size_hint_y=None,
@@ -3088,18 +3108,6 @@ class CalibrationScreen(BoxLayout):
         )
         s.bind(size=s.setter('text_size'))
         card.add_widget(s)
-
-        d = Label(
-            text=desc,
-            font_size=theme.FONT_BODY_REGULAR,
-            color=theme.TEXT_SECONDARY,
-            size_hint_y=None,
-            height=20,
-            halign='left',
-            valign='middle',
-        )
-        d.bind(size=d.setter('text_size'))
-        card.add_widget(d)
 
         # Spacer
         card.add_widget(Label())
@@ -3268,11 +3276,10 @@ class RandomForestScreen(BoxLayout):
         # Title
         title = Label(
             text='RANDOM FOREST TRAINING',
-            font_size=theme.FONT_TITLE_MEDIUM,
+            font_size=theme.FONT_HEADING_MEDIUM,
             bold=True,
             color=theme.GOLD,
             size_hint_y=None,
-            height=35,
             halign='left',
             valign='middle',
         )
@@ -3651,6 +3658,8 @@ class MonitoringScreen(BoxLayout):
 
     def _build_tech_view(self):
         view = BoxLayout(orientation='vertical', spacing=10)
+        view.size_hint_y = None
+        view.bind(minimum_height=view.setter('height'))
 
         # State display
         state_box = GradientCard(
@@ -3883,15 +3892,16 @@ class LoginScreen(FloatLayout):
 
         # Title
         title = Label(
-            text='NEURO-MENTOR',
-            font_size=sp(32),
-            bold=True,
-            color=theme.GOLD,
+            text="NEUROMENTOR",
+            font_size=theme.FONT_TITLE_MEDIUM,
+            size_hint_x=1,
             size_hint_y=None,
-            height=50,
+            height=sp(50),
+            halign='center',
+            valign='middle'
         )
+        # disables wrapping
         card.add_widget(title)
-
         # Subtitle
         subtitle = Label(
             text='Multi-User Brain Computer Interface System',
@@ -4012,32 +4022,21 @@ class LoginScreen(FloatLayout):
 
         # Username input
         self._username_input = TextInput(
-            hint_text='Enter your username (alphanumeric)',
+            hint_text='Enter your username',
             font_size=theme.FONT_BODY_REGULAR,
             multiline=False,
+            halign='left',
+            size_hint_x=1,
             size_hint_y=None,
             height=40,
             background_color=theme.INPUT_BG,
             foreground_color=theme.TEXT_PRIMARY,
             hint_text_color=theme.TEXT_MUTED,
             cursor_color=theme.TEAL,
-            padding=[12, 10],
+            padding=[10, 10],
         )
         self._username_input.bind(on_text_validate=lambda *a: self._login())
         card.add_widget(self._username_input)
-
-        # Help text
-        help_lbl = Label(
-            text='Use letters, numbers, and underscores only',
-            font_size=theme.FONT_BODY_SMALL,
-            color=theme.TEXT_MUTED,
-            size_hint_y=None,
-            height=20,
-            halign='left',
-            valign='middle',
-        )
-        help_lbl.bind(size=help_lbl.setter('text_size'))
-        card.add_widget(help_lbl)
 
         # Error label
         self._error_lbl = Label(
@@ -4143,8 +4142,8 @@ class MainShell(FloatLayout):
 
         # Top bar
         top_bar = BoxLayout(
-            size_hint_y=None, height=50,
-            padding=[8, 0], spacing=10,
+            size_hint_y=None, height=80,
+            padding=[15, 0], spacing=10,
         )
         with top_bar.canvas.before:
             Color(*theme.SIDEBAR_BG)
@@ -4175,7 +4174,7 @@ class MainShell(FloatLayout):
             bold=True,
             color=theme.GOLD,
             size_hint_x=None,
-            width=160,
+            width=250,
             halign='left',
             valign='middle',
         )
@@ -4191,7 +4190,7 @@ class MainShell(FloatLayout):
             font_size=theme.FONT_BODY_SMALL,
             color=theme.TEXT_MUTED,
             size_hint_x=None,
-            width=100,
+            width=150,
             halign='right',
             valign='middle',
         )
@@ -4392,7 +4391,7 @@ class SidebarNavigation(BoxLayout):
             font_size=theme.FONT_BODY_SMALL,
             color=theme.TEXT_MUTED,
             size_hint_x=None,
-            width=60,
+            width=100,
             halign='left',
             valign='middle',
         )
@@ -4425,7 +4424,7 @@ class SidebarNavigation(BoxLayout):
 
         # Switch user button
         switch_btn = ShadowButton(
-            text='\U0001f504 SWITCH USER',
+            text='SWITCH USER',
             font_size=theme.FONT_BODY_REGULAR,
             size_hint_y=None,
             height=40,
@@ -4433,8 +4432,18 @@ class SidebarNavigation(BoxLayout):
             color=theme.TEAL,
         )
         switch_btn.bind(on_press=lambda *a: self._show_switch_dialog())
+        
+        burger = MenuBurgerButton(
+            size_hint=(None, None), size=(30, 30), pos_hint={'center_y': 0.5}, color=theme.TEAL
+        )
+        burger.bind(on_press=lambda *a: self._show_switch_dialog())
+
+        switch_layout = BoxLayout(orientation='horizontal', spacing=10, size_hint_y=None, height=40)
+        switch_layout.add_widget(burger)
+        switch_layout.add_widget(switch_btn)
+
         switch_row = BoxLayout(size_hint_y=None, height=55, padding=[15, 8])
-        switch_row.add_widget(switch_btn)
+        switch_row.add_widget(switch_layout)
         self.add_widget(switch_row)
 
     def _on_nav_select(self, index):
@@ -4444,6 +4453,8 @@ class SidebarNavigation(BoxLayout):
 
     def _show_switch_dialog(self):
         content = BoxLayout(orientation='vertical', padding=10, spacing=10)
+        content.size_hint_y = None
+        content.bind(minimum_height=content.setter('height'))
         msg = Label(
             text='This will end the current session\nand return to login. Continue?',
             font_size=theme.FONT_BODY_REGULAR,
@@ -4630,7 +4641,12 @@ class NeuroMentorApp(App):
         self.app_state = AppState()
 
         # Root container
-        self.root_container = FloatLayout()
+        from kivy.uix.boxlayout import BoxLayout
+        self.root_container = BoxLayout(
+            orientation='vertical',
+            padding=[10, 10, 10, 10],
+            spacing=10
+        )
 
         # Show login screen initially
         self._show_login()
