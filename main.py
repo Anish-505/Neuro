@@ -1,31 +1,51 @@
 """
 Unified NeuroMentor App
 """
-from kivy.metrics import sp
+from kivy.metrics import sp, dp
 from kivy.uix.label import Label
 from kivy.uix.button import Button
 from kivy.uix.behaviors import ButtonBehavior
 
-_orig_label_init = Label.__init__
-def _new_label_init(self, **kwargs):
-    _orig_label_init(self, **kwargs)
-    self.size_hint_y = None
-    self.bind(width=lambda inst, val: setattr(inst, 'text_size', (inst.width, None)))
-    self.bind(texture_size=lambda inst, val: setattr(inst, 'height', inst.texture_size[1]))
-    if isinstance(self, ButtonBehavior) or isinstance(self, Button):
+
+# ============================================================
+# Reusable UI base components (replaces global monkey-patching)
+# ============================================================
+
+class AutoLabel(Label):
+    """Label with automatic text wrapping and dynamic height.
+    Use for body text, form labels, status text — anything that should
+    wrap and grow vertically to fit its content.
+    """
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+        self.size_hint_y = None
+        self.bind(width=self._update_text_size)
+        self.bind(texture_size=self._update_height)
+
+    def _update_text_size(self, *args):
+        self.text_size = (self.width, None)
+
+    def _update_height(self, *args):
+        self.height = self.texture_size[1]
+
+
+class AutoButton(ButtonBehavior, Label):
+    """Button with automatic text wrapping, centered text, and dynamic height.
+    Use for action buttons where text length may vary.
+    """
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+        self.size_hint_y = None
         self.halign = 'center'
         self.valign = 'middle'
-Label.__init__ = _new_label_init
+        self.bind(width=self._update_text_size)
+        self.bind(texture_size=self._update_height)
 
-_orig_button_init = Button.__init__
-def _new_button_init(self, **kwargs):
-    _orig_button_init(self, **kwargs)
-    self.size_hint_y = None
-    self.bind(width=lambda inst, val: setattr(inst, 'text_size', (inst.width, None)))
-    self.bind(texture_size=lambda inst, val: setattr(inst, 'height', inst.texture_size[1]))
-    self.halign = 'center'
-    self.valign = 'middle'
-Button.__init__ = _new_button_init
+    def _update_text_size(self, *args):
+        self.text_size = (self.width, None)
+
+    def _update_height(self, *args):
+        self.height = max(self.texture_size[1], dp(40))
 
 
 # ============================================================
@@ -44,57 +64,62 @@ class theme:
     # COLOR PALETTE
     # ============================================================
 
-    # Primary accent - Gold Yellow
-    GOLD = (0.910, 0.753, 0.180, 1)          # #e8c02e
+    # Primary accent - Mustard
+    GOLD = (0.647, 0.486, 0.263, 1)          # #a57c43
 
-    # Secondary accent - Lighter Gold
-    TEAL = (0.933, 0.800, 0.310, 1)          # #eecc4f
+    # Secondary accent - Tan
+    TEAL = (0.741, 0.608, 0.416, 1)          # #bd9b6a
 
-    # Danger/Stress - Amber Orange
-    RED = (0.863, 0.608, 0.157, 1)           # #dc9b28
+    # Danger/Stress - Burgundy
+    RED = (0.439, 0.184, 0.188, 1)           # #702f30
 
     # Backgrounds
-    BG_DARK = (0.200, 0.180, 0.235, 1)       # #332e3c
-    PANEL_BG = (0.235, 0.216, 0.275, 1)      # #3c3746
-    CARD_BG = (0.275, 0.255, 0.318, 1)       # #464151
+    BG_DARK = (0.176, 0.231, 0.216, 1)       # #2d3b37
+    PANEL_BG = (0.220, 0.196, 0.200, 1)      # #383233
+    CARD_BG = (0.260, 0.236, 0.240, 1)       # #423c3d
 
     # Borders
-    BORDER_DARK = (0.310, 0.290, 0.357, 1)   # #4f4a5b
-    BORDER_LIGHT = (0.357, 0.337, 0.400, 1)  # #5b5666
+    BORDER_DARK = (0.220, 0.196, 0.200, 1)   # #383233
+    BORDER_LIGHT = (0.741, 0.608, 0.416, 1)  # #bd9b6a
 
     # Text colors
-    TEXT_PRIMARY = (0.910, 0.902, 0.925, 1)   # #e8e6ec
-    TEXT_SECONDARY = (0.753, 0.737, 0.773, 1) # #c0bcc5
-    TEXT_MUTED = (0.475, 0.455, 0.502, 1)     # #797480
+    TEXT_PRIMARY = (0.898, 0.871, 0.773, 1)   # #e5dec5
+    TEXT_SECONDARY = (0.839, 0.733, 0.682, 1) # #d6bbae
+    TEXT_MUTED = (0.650, 0.610, 0.550, 1)     # Muted ivory
 
     # Input
-    INPUT_BG = (0.173, 0.157, 0.208, 1)      # #2c2835
-    INPUT_BORDER = (0.357, 0.337, 0.400, 1)   # #5b5666
+    INPUT_BG = (0.160, 0.136, 0.140, 1)      # #292324
+    INPUT_BORDER = (0.741, 0.608, 0.416, 1)   # #bd9b6a
 
     # Additional UI colors
-    SIDEBAR_BG = (0.180, 0.161, 0.212, 1)    # #2e2936
-    SIDEBAR_BORDER = (0.310, 0.290, 0.357, 1) # #4f4a5b
-    DARK_CARD = (0.157, 0.141, 0.188, 1)     # #282430
-    BUTTON_BG = (0.275, 0.255, 0.318, 1)     # #464151
-    DANGER_BUTTON_BG = (0.250, 0.200, 0.100, 1) # #40331a
+    SIDEBAR_BG = (0.220, 0.196, 0.200, 1)    # #383233
+    SIDEBAR_BORDER = (0.176, 0.231, 0.216, 1) # #2d3b37
+    DARK_CARD = (0.176, 0.231, 0.216, 1)     # #2d3b37
+    BUTTON_BG = (0.260, 0.236, 0.240, 1)     # #423c3d
+    DANGER_BUTTON_BG = (0.439, 0.184, 0.188, 1) # #702f30
 
     # Transparent
     TRANSPARENT = (0, 0, 0, 0)
 
 
     # ============================================================
-    # FONT SIZES
+    # FONT SIZES — plain integers, apply sp() at runtime via font()
     # ============================================================
 
-    FONT_TITLE_LARGE = sp(32)
-    FONT_TITLE_MEDIUM = sp(28)
-    FONT_HEADING_LARGE = sp(26)
-    FONT_HEADING_MEDIUM = sp(22)
-    FONT_BODY_LARGE = sp(20)
-    FONT_BODY_REGULAR = sp(18)
-    FONT_BODY_SMALL = sp(16)
-    FONT_DISPLAY_LARGE = sp(80)
-    FONT_TIMER = sp(28)
+    FONT_TITLE_LARGE = 26
+    FONT_TITLE_MEDIUM = 22
+    FONT_HEADING_LARGE = 20
+    FONT_HEADING_MEDIUM = 18
+    FONT_BODY_LARGE = 16
+    FONT_BODY_REGULAR = 14
+    FONT_BODY_SMALL = 12
+    FONT_DISPLAY_LARGE = 48
+    FONT_TIMER = 22
+
+    @staticmethod
+    def font(size):
+        """Convert a plain integer font size to DPI-scaled sp() at runtime."""
+        return sp(size)
 
 
     # ============================================================
@@ -161,6 +186,66 @@ FEATURE_NAMES = [
 ]
 
 
+# ============================================================
+# Safe division helper
+# ============================================================
+
+def safe_div(numerator, denominator, default=1e-9):
+    """Safe division: avoid NaN/Inf by using max() for denominator.
+    
+    Args:
+        numerator: float
+        denominator: float
+        default: minimum absolute value for denominator
+    
+    Returns:
+        numerator / max(abs(denominator), default)
+    """
+    return numerator / max(abs(denominator), default)
+
+
+# ============================================================
+# EMBEDDED MODEL DATA (Base64-encoded, no filesystem I/O)
+# ============================================================
+
+# StandardScaler (275 bytes when re-pickled) - embedded directly
+SCALER_B64 = 'gASVvwIAAAAAAACMG3NrbGVhcm4ucHJlcHJvY2Vzc2luZy5fZGF0YZSMDlN0YW5kYXJkU2NhbGVylJOUKYGUfZQojAl3aXRoX21lYW6UiIwId2l0aF9zdGSUiIwEY29weZSIjA5uX2ZlYXR1cmVzX2luX5RLC4wPbl9zYW1wbGVzX3NlZW5flIwWbnVtcHkuX2NvcmUubXVsdGlhcnJheZSMBnNjYWxhcpSTlIwFbnVtcHmUjAVkdHlwZZSTlIwCZjiUiYiHlFKUKEsDjAE8lE5OTkr/////Sv////9LAHSUYkMIAAAAAAB18kCUhpRSlIwFbWVhbl+UaAqMDF9yZWNvbnN0cnVjdJSTlGgNjAduZGFycmF5lJOUSwCFlEMBYpSHlFKUKEsBSwuFlGgPjAJmOJSJiIeUUpQoSwNoE05OTkr/////Sv////9LAHSUYolDWEwZudgyN8hAQvbgBzyg0UAtF7dGMtbMQGJR2OPLRORAMiq5uJbFE0GLMbx8SKMZQLD7Q7BKce8/MWigKSBVGkAIi2N+L0goQIbig71PHtpAQaN2QKwF4ECUdJRijAR2YXJflGgaaBxLAIWUaB6HlFKUKEsBSwuFlGgkiUNYDSfWa/YosUEp+ZyxkuO8Qddf4hqlIbVB2pT65Fq/4kHEuvEFgYw8Qjayjx30ylZAyhkJCLPs3D/u5HghXlFgQLmayxx0wWNAAcVolNy70UHSxIj6sfbWQZR0lGKMBnNjYWxlX5RoGmgcSwCFlGgeh5RSlChLAUsLhZRoJIlDWJGsMibikdBA2n7MU9d/1UC+5FftN2PSQNgcar9FfuhAtv5Qs1hfFUF9wENxwhgjQC8SWGs8g+U/pkV7GN/ZJkDZph9OqiQpQASvrkQ52OBA32PLsQwr40CUdJRijBBfc2tsZWFybl92ZXJzaW9ulIwFMS44LjCUdWIu'
+
+# LabelEncoder (275 bytes when re-pickled) - embedded directly
+ENCODER_B64 = 'gASVCAEAAAAAAACMHHNrbGVhcm4ucHJlcHJvY2Vzc2luZy5fbGFiZWyUjAxMYWJlbEVuY29kZXKUk5QpgZR9lCiMCGNsYXNzZXNflIwWbnVtcHkuX2NvcmUubXVsdGlhcnJheZSMDF9yZWNvbnN0cnVjdJSTlIwFbnVtcHmUjAduZGFycmF5lJOUSwCFlEMBYpSHlFKUKEsBSwOFlGgJjAVkdHlwZZSTlIwCTziUiYiHlFKUKEsDjAF8lE5OTkr/////Sv////9LP3SUYoldlCiMCEJhc2VsaW5llIwHRm9jdXNlZJSMCFN0cmVzc2VklGV0lGKMEF9za2xlYXJuX3ZlcnNpb26UjAUxLjguMJR1Yi4='
+
+# PlaceHolder for RandomForestClassifier - format is gzip(pickled_model) -> base64
+# To embed the ~966MB RFC: gzip.compress(model_bytes, 9) -> base64.b64encode -> decode to string
+RFC_B64_COMPRESSED = None  # Will be populated with compressed model when available
+
+
+def _decode_model(b64_string):
+    """Decode a base64-encoded pickled model and return it."""
+    import base64
+    import pickle
+    try:
+        model_bytes = base64.b64decode(b64_string)
+        return pickle.loads(model_bytes)
+    except Exception as e:
+        print(f"[embedded_model] Failed to decode model: {e}")
+        return None
+
+
+def _decode_model_gzip_compressed(b64_string):
+    """Decode a gzip-compressed, base64-encoded pickled model."""
+    import base64
+    import gzip
+    import io
+    try:
+        compressed_bytes = base64.b64decode(b64_string)
+        model_bytes = gzip.decompress(compressed_bytes)
+        bio = io.BytesIO(model_bytes)
+        return joblib.load(bio)
+    except Exception as e:
+        print(f"[embedded_model] Failed to decode compressed model: {e}")
+        return None
+
+
 class RFClassifier:
     """Random Forest classifier for EEG mental state prediction.
 
@@ -169,6 +254,9 @@ class RFClassifier:
 
     Uses an 11-feature vector extracted from EegBands objects,
     matching the training script's feature engineering.
+    
+    Models are loaded from embedded (base64-encoded) data at runtime,
+    with no filesystem I/O required.
     """
 
     def __init__(self):
@@ -177,6 +265,76 @@ class RFClassifier:
         self._encoder = None      # LabelEncoder
         self._is_trained: bool = False
         self._feature_names: list = list(FEATURE_NAMES)
+        
+        # Load scaler and encoder from embedded base64 data
+        self._load_from_embedded()
+    
+    def _load_from_embedded(self):
+        """Load scaler, encoder, and RFC from embedded base64-encoded data.
+        
+        All model data is embedded directly in this file as base64 strings.
+        No filesystem I/O required except for fallback RFC loading.
+        """
+        if not _HAS_SKLEARN:
+            return
+        
+        # Load scaler from base64
+        if SCALER_B64:
+            try:
+                self._scaler = _decode_model(SCALER_B64)
+                if self._scaler is not None:
+                    print("[RFClassifier] Scaler loaded from embedded data")
+            except Exception as e:
+                print(f"[RFClassifier] Failed to load scaler from embedded data: {e}")
+        
+        # Load encoder from base64
+        if ENCODER_B64:
+            try:
+                self._encoder = _decode_model(ENCODER_B64)
+                if self._encoder is not None:
+                    print("[RFClassifier] Encoder loaded from embedded data")
+            except Exception as e:
+                print(f"[RFClassifier] Failed to load encoder from embedded data: {e}")
+        
+        # Try to load RFC from embedded compressed base64
+        if RFC_B64_COMPRESSED:
+            try:
+                self._clf = _decode_model_gzip_compressed(RFC_B64_COMPRESSED)
+                if self._clf is not None:
+                    self._is_trained = True
+                    print("[RFClassifier] RandomForestClassifier loaded from embedded data")
+                    return
+            except Exception as e:
+                print(f"[RFClassifier] Failed to load RFC from embedded data: {e}")
+        
+        # Fallback: load clf from disk
+        self._load_clf_from_disk()
+    
+    def _load_clf_from_disk(self):
+        """Load RandomForestClassifier from disk (temporary fallback).
+        
+        TODO: Replace with embedded base64 once compression is applied.
+        """
+        if not _HAS_SKLEARN:
+            return
+        
+        # Try common locations
+        model_paths = [
+            os.path.join(os.path.dirname(os.path.abspath(__file__)), 'rf_model', 'rf_model', 'rf_eeg_model.pkl'),
+            os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'rf_model', 'rf_model', 'rf_eeg_model.pkl'),
+        ]
+        
+        for model_path in model_paths:
+            if os.path.exists(model_path):
+                try:
+                    self._clf = joblib.load(model_path)
+                    self._is_trained = True
+                    print(f"[RFClassifier] Loaded clf from {model_path}")
+                    return
+                except Exception as e:
+                    print(f"[RFClassifier] Failed to load clf from {model_path}: {e}")
+        
+        print("[RFClassifier] Warning: RandomForestClassifier not loaded")
 
     # ----------------------------------------------------------
     # Feature extraction — matches training script exactly
@@ -193,10 +351,11 @@ class RFClassifier:
         """
         d, t, a, b, g = bands.delta, bands.theta, bands.alpha, bands.beta, bands.gamma
 
-        beta_alpha = b / (a + 1e-9)
-        alpha_theta = a / (t + 1e-9)
-        beta_theta = b / (t + 1e-9)
-        gamma_beta = g / (b + 1e-9)
+        # Use safe_div to avoid NaN/Inf from near-zero denominators
+        beta_alpha = safe_div(b, a)
+        alpha_theta = safe_div(a, t)
+        beta_theta = safe_div(b, t)
+        gamma_beta = safe_div(g, b)
         beta_minus_alpha = b - a
         alpha_plus_theta = a + t
 
@@ -1563,7 +1722,7 @@ class EegGraph(BoxLayout):
         # Title label
         self._title_label = Label(
             text='Live EEG Signal Check',
-            font_size=theme.FONT_BODY_SMALL,
+            font_size=theme.font(theme.FONT_BODY_SMALL),
             color=theme.TEXT_SECONDARY,
             size_hint_y=None,
             height=20,
@@ -1576,7 +1735,7 @@ class EegGraph(BoxLayout):
         # Placeholder label (shown when no data)
         self._placeholder = Label(
             text='Waiting for signal...',
-            font_size=theme.FONT_BODY_REGULAR,
+            font_size=theme.font(theme.FONT_BODY_REGULAR),
             color=theme.TEXT_MUTED,
         )
         self.add_widget(self._placeholder)
@@ -1685,7 +1844,7 @@ class BandPowerBars(BoxLayout):
         # Title
         title = Label(
             text='EEG BAND POWERS',
-            font_size=theme.FONT_BODY_SMALL,
+            font_size=theme.font(theme.FONT_BODY_SMALL),
             color=theme.TEXT_SECONDARY,
             size_hint_y=None,
             height=20,
@@ -1699,7 +1858,7 @@ class BandPowerBars(BoxLayout):
             row = BoxLayout(size_hint_y=None, height=24, spacing=5)
             lbl = Label(
                 text=band,
-                font_size=theme.FONT_BODY_SMALL,
+                font_size=theme.font(theme.FONT_BODY_SMALL),
                 color=theme.TEXT_MUTED,
                 size_hint_x=None,
                 width=50,
@@ -1933,7 +2092,7 @@ class BreathingWidget(BoxLayout):
             text='4-7-8 (Calm)',
             group='breathing_mode',
             state='down',
-            font_size=theme.FONT_BODY_REGULAR,
+            font_size=theme.font(theme.FONT_BODY_REGULAR),
             background_color=theme.GOLD,
             color=theme.BG_DARK,
         )
@@ -1943,7 +2102,7 @@ class BreathingWidget(BoxLayout):
             text='Box (Focus)',
             group='breathing_mode',
             state='normal',
-            font_size=theme.FONT_BODY_REGULAR,
+            font_size=theme.font(theme.FONT_BODY_REGULAR),
             background_color=theme.BORDER_DARK,
             color=theme.TEXT_PRIMARY,
         )
@@ -1956,7 +2115,7 @@ class BreathingWidget(BoxLayout):
         # Score label
         self._score_lbl = Label(
             text='Score: 0',
-            font_size=theme.FONT_HEADING_MEDIUM,
+            font_size=theme.font(theme.FONT_HEADING_MEDIUM),
             color=theme.GOLD,
             size_hint_y=None,
             height=40,
@@ -1966,7 +2125,7 @@ class BreathingWidget(BoxLayout):
         # Start/Stop button
         self._start_btn = ShadowButton(
             text='START',
-            font_size=theme.FONT_BODY_REGULAR,
+            font_size=theme.font(theme.FONT_BODY_REGULAR),
             bold=True,
             size_hint=(None, None),
             size=(200, 45),
@@ -2130,7 +2289,7 @@ class FocusWidget(BoxLayout):
             text='Visual Tracking',
             group='focus_mode',
             state='down',
-            font_size=theme.FONT_BODY_REGULAR,
+            font_size=theme.font(theme.FONT_BODY_REGULAR),
             background_color=theme.GOLD,
             color=theme.BG_DARK,
         )
@@ -2140,7 +2299,7 @@ class FocusWidget(BoxLayout):
             text='Tech Reading',
             group='focus_mode',
             state='normal',
-            font_size=theme.FONT_BODY_REGULAR,
+            font_size=theme.font(theme.FONT_BODY_REGULAR),
             background_color=theme.BORDER_DARK,
             color=theme.TEXT_PRIMARY,
         )
@@ -2164,7 +2323,7 @@ class FocusWidget(BoxLayout):
         # Start/Stop button
         self._start_btn = ShadowButton(
             text='START',
-            font_size=theme.FONT_BODY_REGULAR,
+            font_size=theme.font(theme.FONT_BODY_REGULAR),
             bold=True,
             size_hint=(None, None),
             size=(200, 45),
@@ -2291,7 +2450,7 @@ class ReadingView(BoxLayout):
 
         self._header = Label(
             text='READ CAREFULLY:',
-            font_size=theme.FONT_BODY_SMALL,
+            font_size=theme.font(theme.FONT_BODY_SMALL),
             color=theme.TEXT_SECONDARY,
             size_hint_y=None,
             height=20,
@@ -2304,7 +2463,7 @@ class ReadingView(BoxLayout):
         scroll = ScrollView()
         self._article_lbl = Label(
             text=random.choice(ARTICLES),
-            font_size=theme.FONT_BODY_LARGE,
+            font_size=theme.font(theme.FONT_BODY_LARGE),
             color=theme.TEAL,
             markup=False,
             halign='left',
@@ -2399,7 +2558,7 @@ class StroopWidget(BoxLayout):
             text='Stroop',
             group='stroop_mode',
             state='down',
-            font_size=theme.FONT_BODY_REGULAR,
+            font_size=theme.font(theme.FONT_BODY_REGULAR),
             background_color=theme.GOLD,
             color=theme.BG_DARK,
         )
@@ -2409,7 +2568,7 @@ class StroopWidget(BoxLayout):
             text='Rapid Math',
             group='stroop_mode',
             state='normal',
-            font_size=theme.FONT_BODY_REGULAR,
+            font_size=theme.font(theme.FONT_BODY_REGULAR),
             background_color=theme.BORDER_DARK,
             color=theme.TEXT_PRIMARY,
         )
@@ -2448,7 +2607,7 @@ class StroopWidget(BoxLayout):
         
         self._math_input = TextInput(
             hint_text='Answer',
-            font_size=theme.FONT_HEADING_MEDIUM,
+            font_size=theme.font(theme.FONT_HEADING_MEDIUM),
             multiline=False,
             input_filter='int',
             size_hint=(None, 1),
@@ -2460,7 +2619,7 @@ class StroopWidget(BoxLayout):
         
         self._math_submit = ShadowButton(
             text='SUBMIT',
-            font_size=theme.FONT_BODY_REGULAR,
+            font_size=theme.font(theme.FONT_BODY_REGULAR),
             bold=True,
             bg_color=theme.TEAL,
             color=theme.BG_DARK,
@@ -2479,7 +2638,7 @@ class StroopWidget(BoxLayout):
         # Score label
         self._score_lbl = Label(
             text='Score: 0',
-            font_size=theme.FONT_HEADING_MEDIUM,
+            font_size=theme.font(theme.FONT_HEADING_MEDIUM),
             color=theme.GOLD,
             size_hint_y=None,
             height=40,
@@ -2489,7 +2648,7 @@ class StroopWidget(BoxLayout):
         # Start/Stop button
         self._start_btn = ShadowButton(
             text='START',
-            font_size=theme.FONT_BODY_REGULAR,
+            font_size=theme.font(theme.FONT_BODY_REGULAR),
             bold=True,
             size_hint=(None, None),
             size=(200, 45),
@@ -2644,7 +2803,7 @@ class DashboardScreen(BoxLayout):
         # Welcome title
         self._welcome_lbl = Label(
             text='WELCOME BACK, USER',
-            font_size=theme.FONT_TITLE_MEDIUM,
+            font_size=theme.font(theme.FONT_TITLE_MEDIUM),
             bold=True,
             color=theme.GOLD,
             size_hint_y=None,
@@ -2668,7 +2827,7 @@ class DashboardScreen(BoxLayout):
         # Removed LIVE STATUS text to prevent overlapping
         status_value = Label(
             text='OFFLINE',
-            font_size=theme.FONT_HEADING_MEDIUM,
+            font_size=theme.font(theme.FONT_HEADING_MEDIUM),
             color=theme.TEXT_SECONDARY,
             halign='left',
             valign='middle',
@@ -2687,7 +2846,7 @@ class DashboardScreen(BoxLayout):
         # Event log title
         log_title = Label(
             text='EVENT LOG',
-            font_size=theme.FONT_BODY_SMALL,
+            font_size=theme.font(theme.FONT_BODY_SMALL),
             color=theme.TEXT_SECONDARY,
             size_hint_y=None,
             height=18,
@@ -2701,7 +2860,7 @@ class DashboardScreen(BoxLayout):
         log_box = GradientCard(size_hint_y=0.4, padding=[10, 10])
         log_label = Label(
             text='No events yet',
-            font_size=theme.FONT_BODY_REGULAR,
+            font_size=theme.font(theme.FONT_BODY_REGULAR),
             color=theme.TEAL,
             halign='left',
             valign='top',
@@ -2713,7 +2872,7 @@ class DashboardScreen(BoxLayout):
         # Refresh button
         refresh_btn = ShadowButton(
             text='SYSTEM REFRESH',
-            font_size=theme.FONT_BODY_REGULAR,
+            font_size=theme.font(theme.FONT_BODY_REGULAR),
             bold=True,
             size_hint_y=None,
             height=45,
@@ -2735,7 +2894,7 @@ class DashboardScreen(BoxLayout):
 
         t = Label(
             text=title,
-            font_size=theme.FONT_BODY_SMALL,
+            font_size=theme.font(theme.FONT_BODY_SMALL),
             color=theme.TEXT_MUTED,
             size_hint_y=None,
             height=16,
@@ -2747,7 +2906,7 @@ class DashboardScreen(BoxLayout):
 
         v = Label(
             text=value,
-            font_size=theme.FONT_HEADING_LARGE,
+            font_size=theme.font(theme.FONT_HEADING_LARGE),
             bold=True,
             color=accent_color,
             halign='left',
@@ -2788,7 +2947,7 @@ class ProfileScreen(BoxLayout):
         )
         title_lbl = Label(
             text='USER PROFILE',
-            font_size=theme.FONT_TITLE_MEDIUM,
+            font_size=theme.font(theme.FONT_TITLE_MEDIUM),
             bold=True,
             color=theme.GOLD,
             halign='left',
@@ -2805,7 +2964,7 @@ class ProfileScreen(BoxLayout):
         # Full Name
         name_lbl = Label(
             text='FULL NAME:',
-            font_size=theme.FONT_BODY_REGULAR,
+            font_size=theme.font(theme.FONT_BODY_REGULAR),
             color=theme.TEAL,
             bold=True,
             size_hint_y=None,
@@ -2817,7 +2976,7 @@ class ProfileScreen(BoxLayout):
         form_box.add_widget(name_lbl)
 
         self._name_input = TextInput(
-            font_size=theme.FONT_BODY_REGULAR,
+            font_size=theme.font(theme.FONT_BODY_REGULAR),
             multiline=False,
             size_hint_y=None,
             height=40,
@@ -2831,7 +2990,7 @@ class ProfileScreen(BoxLayout):
         # Age
         age_lbl = Label(
             text='AGE:',
-            font_size=theme.FONT_BODY_REGULAR,
+            font_size=theme.font(theme.FONT_BODY_REGULAR),
             color=theme.TEAL,
             bold=True,
             size_hint_y=None,
@@ -2843,7 +3002,7 @@ class ProfileScreen(BoxLayout):
         form_box.add_widget(age_lbl)
 
         self._age_input = TextInput(
-            font_size=theme.FONT_BODY_REGULAR,
+            font_size=theme.font(theme.FONT_BODY_REGULAR),
             multiline=False,
             input_filter='int',
             size_hint_y=None,
@@ -2858,7 +3017,7 @@ class ProfileScreen(BoxLayout):
         # Clinical Notes
         notes_lbl = Label(
             text='CLINICAL NOTES:',
-            font_size=theme.FONT_BODY_REGULAR,
+            font_size=theme.font(theme.FONT_BODY_REGULAR),
             color=theme.TEAL,
             bold=True,
             size_hint_y=None,
@@ -2870,7 +3029,7 @@ class ProfileScreen(BoxLayout):
         form_box.add_widget(notes_lbl)
 
         self._notes_input = TextInput(
-            font_size=theme.FONT_BODY_REGULAR,
+            font_size=theme.font(theme.FONT_BODY_REGULAR),
             multiline=True,
             size_hint_y=None,
             height=120,
@@ -2886,7 +3045,7 @@ class ProfileScreen(BoxLayout):
         # Save button
         save_btn = ShadowButton(
             text='SAVE PROFILE DATA',
-            font_size=theme.FONT_BODY_REGULAR,
+            font_size=theme.font(theme.FONT_BODY_REGULAR),
             bold=True,
             size_hint_y=None,
             height=45,
@@ -2918,7 +3077,7 @@ class ProfileScreen(BoxLayout):
             title='',
             content=Label(
                 text='PROFILE UPDATED.',
-                font_size=theme.FONT_BODY_REGULAR,
+                font_size=theme.font(theme.FONT_BODY_REGULAR),
                 color=theme.TEXT_PRIMARY,
             ),
             size_hint=(None, None),
@@ -2981,7 +3140,7 @@ class CalibrationScreen(BoxLayout):
         )
         self._feedback_lbl = Label(
             text='Waiting for signal...',
-            font_size=theme.FONT_BODY_LARGE,
+            font_size=theme.font(theme.FONT_BODY_LARGE),
             color=theme.TEXT_MUTED,
             halign='center',
             valign='middle',
@@ -3000,7 +3159,7 @@ class CalibrationScreen(BoxLayout):
         self._seq_btn_box.bind(minimum_height=self._seq_btn_box.setter('height'))
         self._execute_btn = ShadowButton(
             text='EXECUTE FULL SEQUENCE (1 HOUR)',
-            font_size=theme.FONT_BODY_LARGE,
+            font_size=theme.font(theme.FONT_BODY_LARGE),
             bold=True,
             background_color=theme.GOLD,
             color=theme.BG_DARK,
@@ -3022,7 +3181,7 @@ class CalibrationScreen(BoxLayout):
 
         self._status_lbl = Label(
             text='STATUS: IDLE',
-            font_size=theme.FONT_BODY_SMALL,
+            font_size=theme.font(theme.FONT_BODY_SMALL),
             color=theme.TEXT_SECONDARY,
             size_hint_x=0.3,
             halign='left',
@@ -3033,7 +3192,7 @@ class CalibrationScreen(BoxLayout):
 
         xp_lbl = Label(
             text='NEURO XP: 0',
-            font_size=theme.FONT_HEADING_MEDIUM,
+            font_size=theme.font(theme.FONT_HEADING_MEDIUM),
             bold=True,
             color=theme.GOLD,
             size_hint_x=0.4,
@@ -3042,7 +3201,7 @@ class CalibrationScreen(BoxLayout):
 
         self._timer_lbl = Label(
             text='00:00',
-            font_size=theme.FONT_TIMER,
+            font_size=theme.font(theme.FONT_TIMER),
             bold=True,
             color=theme.TEAL,
             size_hint_x=0.15,
@@ -3051,7 +3210,7 @@ class CalibrationScreen(BoxLayout):
 
         self._abort_btn = ShadowButton(
             text='ABORT',
-            font_size=theme.FONT_BODY_REGULAR,
+            font_size=theme.font(theme.FONT_BODY_REGULAR),
             bold=True,
             size_hint_x=0.3,
             background_color=theme.DANGER_BUTTON_BG,
@@ -3098,7 +3257,7 @@ class CalibrationScreen(BoxLayout):
 
         s = Label(
             text=subtitle,
-            font_size=theme.FONT_BODY_SMALL,
+            font_size=theme.font(theme.FONT_BODY_SMALL),
             italic=True,
             color=theme.TEXT_MUTED,
             size_hint_y=None,
@@ -3117,7 +3276,7 @@ class CalibrationScreen(BoxLayout):
 
         btn = ShadowButton(
             text='INITIALIZE',
-            font_size=theme.FONT_BODY_REGULAR,
+            font_size=theme.font(theme.FONT_BODY_REGULAR),
             bold=True,
             size_hint_y=None,
             height=40,
@@ -3276,7 +3435,7 @@ class RandomForestScreen(BoxLayout):
         # Title
         title = Label(
             text='RANDOM FOREST TRAINING',
-            font_size=theme.FONT_HEADING_MEDIUM,
+            font_size=theme.font(theme.FONT_HEADING_MEDIUM),
             bold=True,
             color=theme.GOLD,
             size_hint_y=None,
@@ -3292,7 +3451,7 @@ class RandomForestScreen(BoxLayout):
         scroll = ScrollView()
         self._console_label = Label(
             text='',
-            font_size=theme.FONT_BODY_REGULAR,
+            font_size=theme.font(theme.FONT_BODY_REGULAR),
             color=theme.TEAL,
             halign='left',
             valign='top',
@@ -3311,7 +3470,7 @@ class RandomForestScreen(BoxLayout):
         # Generate demo data button
         self._demo_btn = ShadowButton(
             text='GENERATE DEMO DATA (TESTING)',
-            font_size=theme.FONT_BODY_REGULAR,
+            font_size=theme.font(theme.FONT_BODY_REGULAR),
             bold=True,
             size_hint_y=None,
             height=44,
@@ -3324,7 +3483,7 @@ class RandomForestScreen(BoxLayout):
         # Train button
         self._train_btn = ShadowButton(
             text='EXECUTE TRAINING PIPELINE',
-            font_size=theme.FONT_BODY_REGULAR,
+            font_size=theme.font(theme.FONT_BODY_REGULAR),
             bold=True,
             size_hint_y=None,
             height=44,
@@ -3337,7 +3496,7 @@ class RandomForestScreen(BoxLayout):
         # ── Compatibility check button ──
         self._compat_btn = ShadowButton(
             text='RUN COMPATIBILITY CHECK',
-            font_size=theme.FONT_BODY_REGULAR,
+            font_size=theme.font(theme.FONT_BODY_REGULAR),
             bold=True,
             size_hint_y=None,
             height=44,
@@ -3350,7 +3509,7 @@ class RandomForestScreen(BoxLayout):
         # ── Compatibility check output area ──
         compat_title = Label(
             text='COMPATIBILITY DIAGNOSTIC',
-            font_size=theme.FONT_BODY_REGULAR,
+            font_size=theme.font(theme.FONT_BODY_REGULAR),
             bold=True,
             color=theme.TEXT_SECONDARY,
             size_hint_y=None,
@@ -3365,7 +3524,7 @@ class RandomForestScreen(BoxLayout):
         compat_scroll = ScrollView()
         self._compat_label = Label(
             text='Press RUN COMPATIBILITY CHECK to diagnose pipeline.',
-            font_size=theme.FONT_BODY_SMALL,
+            font_size=theme.font(theme.FONT_BODY_SMALL),
             color=theme.TEAL,
             halign='left',
             valign='top',
@@ -3607,7 +3766,7 @@ class MonitoringScreen(BoxLayout):
             text='NEURO-GAME',
             group='monitor_tab',
             state='down',
-            font_size=theme.FONT_BODY_REGULAR,
+            font_size=theme.font(theme.FONT_BODY_REGULAR),
             color=theme.GOLD,
         )
         self._tab_game.bind(on_press=lambda *a: self._switch_tab(True))
@@ -3616,7 +3775,7 @@ class MonitoringScreen(BoxLayout):
             text='TECHNICAL DATA',
             group='monitor_tab',
             state='normal',
-            font_size=theme.FONT_BODY_REGULAR,
+            font_size=theme.font(theme.FONT_BODY_REGULAR),
             color=theme.TEXT_MUTED,
         )
         self._tab_tech.bind(on_press=lambda *a: self._switch_tab(False))
@@ -3639,7 +3798,7 @@ class MonitoringScreen(BoxLayout):
         # Control button
         self._control_btn = ShadowButton(
             text='INITIATE LIVE STREAM',
-            font_size=theme.FONT_BODY_REGULAR,
+            font_size=theme.font(theme.FONT_BODY_REGULAR),
             bold=True,
             size_hint_y=None,
             height=44,
@@ -3670,7 +3829,7 @@ class MonitoringScreen(BoxLayout):
 
         self._state_display = Label(
             text='IDLE',
-            font_size=theme.FONT_DISPLAY_LARGE,
+            font_size=theme.font(theme.FONT_DISPLAY_LARGE),
             bold=True,
             color=theme.TEXT_MUTED,
         )
@@ -3679,12 +3838,12 @@ class MonitoringScreen(BoxLayout):
         conf_row = BoxLayout(size_hint_y=None, height=20)
         self._conf_lbl = Label(
             text='CONF: 0%',
-            font_size=theme.FONT_BODY_SMALL,
+            font_size=theme.font(theme.FONT_BODY_SMALL),
             color=theme.TEXT_MUTED,
         )
         ver_lbl = Label(
             text='VER: ---',
-            font_size=theme.FONT_BODY_SMALL,
+            font_size=theme.font(theme.FONT_BODY_SMALL),
             color=theme.TEXT_MUTED,
         )
         conf_row.add_widget(self._conf_lbl)
@@ -3893,7 +4052,7 @@ class LoginScreen(FloatLayout):
         # Title
         title = Label(
             text="NEUROMENTOR",
-            font_size=theme.FONT_TITLE_MEDIUM,
+            font_size=theme.font(theme.FONT_TITLE_MEDIUM),
             size_hint_x=1,
             size_hint_y=None,
             height=sp(50),
@@ -3905,7 +4064,7 @@ class LoginScreen(FloatLayout):
         # Subtitle
         subtitle = Label(
             text='Multi-User Brain Computer Interface System',
-            font_size=theme.FONT_BODY_SMALL,
+            font_size=theme.font(theme.FONT_BODY_SMALL),
             color=theme.TEXT_MUTED,
             italic=True,
             size_hint_y=None,
@@ -3923,7 +4082,7 @@ class LoginScreen(FloatLayout):
             # Section label
             prev_label = Label(
                 text='PREVIOUS USERS',
-                font_size=theme.FONT_HEADING_LARGE,
+                font_size=theme.font(theme.FONT_HEADING_LARGE),
                 bold=True,
                 color=theme.TEXT_PRIMARY,
                 size_hint_y=None,
@@ -3992,7 +4151,7 @@ class LoginScreen(FloatLayout):
             info = Label(
                 text='Enter your username to login or create a new profile.\n'
                      'Each user has isolated data and trained models.',
-                font_size=theme.FONT_BODY_SMALL,
+                font_size=theme.font(theme.FONT_BODY_SMALL),
                 color=theme.TEXT_SECONDARY,
                 halign='center',
                 valign='middle',
@@ -4009,7 +4168,7 @@ class LoginScreen(FloatLayout):
         # Username label
         usr_label = Label(
             text='USERNAME',
-            font_size=theme.FONT_BODY_SMALL,
+            font_size=theme.font(theme.FONT_BODY_SMALL),
             color=theme.GOLD,
             bold=True,
             size_hint_y=None,
@@ -4023,7 +4182,7 @@ class LoginScreen(FloatLayout):
         # Username input
         self._username_input = TextInput(
             hint_text='Enter your username',
-            font_size=theme.FONT_BODY_REGULAR,
+            font_size=theme.font(theme.FONT_BODY_REGULAR),
             multiline=False,
             halign='left',
             size_hint_x=1,
@@ -4041,7 +4200,7 @@ class LoginScreen(FloatLayout):
         # Error label
         self._error_lbl = Label(
             text='',
-            font_size=theme.FONT_BODY_SMALL,
+            font_size=theme.font(theme.FONT_BODY_SMALL),
             color=theme.RED,
             size_hint_y=None,
             height=20,
@@ -4054,7 +4213,7 @@ class LoginScreen(FloatLayout):
         # Login button
         login_btn = ShadowButton(
             text='ENTER SYSTEM',
-            font_size=theme.FONT_BODY_REGULAR,
+            font_size=theme.font(theme.FONT_BODY_REGULAR),
             bold=True,
             size_hint_y=None,
             height=44,
@@ -4170,7 +4329,7 @@ class MainShell(FloatLayout):
         # App title
         title = Label(
             text='NEUROMENTOR',
-            font_size=theme.FONT_HEADING_MEDIUM,
+            font_size=theme.font(theme.FONT_HEADING_MEDIUM),
             bold=True,
             color=theme.GOLD,
             size_hint_x=None,
@@ -4186,8 +4345,8 @@ class MainShell(FloatLayout):
 
         # Page indicator
         self._page_indicator = Label(
-            text='DASHBOARD',
-            font_size=theme.FONT_BODY_SMALL,
+            text='',
+            font_size=theme.font(theme.FONT_BODY_SMALL),
             color=theme.TEXT_MUTED,
             size_hint_x=None,
             width=150,
@@ -4248,7 +4407,10 @@ class MainShell(FloatLayout):
 
     def _on_page_change(self, *args):
         idx = self._app_state.selected_page_index
-        self._page_indicator.text = PAGE_NAMES[idx] if idx < len(PAGE_NAMES) else ''
+        if idx in (0, 1, 2):
+            self._page_indicator.text = ''
+        else:
+            self._page_indicator.text = PAGE_NAMES[idx] if idx < len(PAGE_NAMES) else ''
 
         self._screen_area.clear_widgets()
         screen = self._screens.get(idx)
@@ -4356,7 +4518,7 @@ class SidebarNavigation(BoxLayout):
         # Logo / Title
         logo = Label(
             text='NEURO\nMENTOR',
-            font_size=theme.FONT_TITLE_LARGE,
+            font_size=theme.font(theme.FONT_TITLE_LARGE),
             bold=True,
             color=theme.GOLD,
             size_hint_y=None,
@@ -4388,7 +4550,7 @@ class SidebarNavigation(BoxLayout):
         )
         sig_label = Label(
             text='SIGNAL:',
-            font_size=theme.FONT_BODY_SMALL,
+            font_size=theme.font(theme.FONT_BODY_SMALL),
             color=theme.TEXT_MUTED,
             size_hint_x=None,
             width=100,
@@ -4410,7 +4572,7 @@ class SidebarNavigation(BoxLayout):
 
         idle_label = Label(
             text='IDLE',
-            font_size=theme.FONT_BODY_SMALL,
+            font_size=theme.font(theme.FONT_BODY_SMALL),
             color=theme.TEXT_MUTED,
             halign='left',
             valign='middle',
@@ -4425,7 +4587,7 @@ class SidebarNavigation(BoxLayout):
         # Switch user button
         switch_btn = ShadowButton(
             text='SWITCH USER',
-            font_size=theme.FONT_BODY_REGULAR,
+            font_size=theme.font(theme.FONT_BODY_REGULAR),
             size_hint_y=None,
             height=40,
             background_color=(0.133, 0.133, 0.133, 1),
@@ -4457,7 +4619,7 @@ class SidebarNavigation(BoxLayout):
         content.bind(minimum_height=content.setter('height'))
         msg = Label(
             text='This will end the current session\nand return to login. Continue?',
-            font_size=theme.FONT_BODY_REGULAR,
+            font_size=theme.font(theme.FONT_BODY_REGULAR),
             color=theme.TEXT_SECONDARY,
             halign='center',
         )
@@ -4467,13 +4629,13 @@ class SidebarNavigation(BoxLayout):
         btn_row = BoxLayout(size_hint_y=None, height=40, spacing=10)
         no_btn = ShadowButton(
             text='No',
-            font_size=theme.FONT_BODY_REGULAR,
+            font_size=theme.font(theme.FONT_BODY_REGULAR),
             background_color=theme.PANEL_BG,
             color=theme.TEXT_MUTED,
         )
         yes_btn = ShadowButton(
             text='Yes',
-            font_size=theme.FONT_BODY_REGULAR,
+            font_size=theme.font(theme.FONT_BODY_REGULAR),
             background_color=theme.PANEL_BG,
             color=theme.GOLD,
         )
@@ -4535,7 +4697,7 @@ class NavShadowButton(BoxLayout):
 
         self._btn = ShadowButton(
             text=text,
-            font_size=theme.FONT_BODY_REGULAR,
+            font_size=theme.font(theme.FONT_BODY_REGULAR),
             halign='left',
             valign='middle',
             background_color=theme.TRANSPARENT,
