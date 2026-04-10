@@ -11,19 +11,24 @@ from kivy.uix.behaviors import ButtonBehavior
 # Reusable UI base components (replaces global monkey-patching)
 # ============================================================
 
+
 class AutoLabel(Label):
     """Label with automatic text wrapping and dynamic height.
-    Use for body text, form labels, status text — anything that should
-    wrap and grow vertically to fit its content.
+    Prevents vertical letter stacking and ensures word wrapping.
     """
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
         self.size_hint_y = None
+        self.halign = 'center'
+        self.valign = 'middle'
+        self.shorten = False
         self.bind(width=self._update_text_size)
         self.bind(texture_size=self._update_height)
 
     def _update_text_size(self, *args):
-        self.text_size = (self.width, None)
+        if self.width < dp(120):
+            return
+        self.text_size = (self.width - dp(16), None)
 
     def _update_height(self, *args):
         self.height = self.texture_size[1]
