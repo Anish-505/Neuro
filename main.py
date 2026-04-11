@@ -1256,15 +1256,15 @@ def _print_summary():
 
     _p('')
     if _fail == 0:
-        _p('  ╔══════════════════════════════════════════════════╗')
+        _p('  ╔════════════════════════════════════════════════════════╗')
         _p('  ║   VERDICT: COMPATIBLE                           ║')
         _p('  ║   Safe to run live classification.               ║')
-        _p('  ╚══════════════════════════════════════════════════╝')
+        _p('  ╚════════════════════════════════════════════════════════╝')
     else:
-        _p('  ╔══════════════════════════════════════════════════╗')
+        _p('  ╔════════════════════════════════════════════════════════╗')
         _p('  ║   VERDICT: INCOMPATIBLE                         ║')
         _p('  ║   Fix issues above before connecting hardware.   ║')
-        _p('  ╚══════════════════════════════════════════════════╝')
+        _p('  ╚════════════════════════════════════════════════════════╝')
     _p('')
 
 
@@ -2132,10 +2132,9 @@ class BreathingWidget(BoxLayout):
             text='START',
             font_size=theme.font(theme.FONT_BODY_REGULAR),
             bold=True,
-            size_hint=(None, None),
-            size=(200, 45),
-            pos_hint={'center_x': 0.5},
-            bg_color=theme.BUTTON_BG,
+            size_hint_y=None,
+            height=44,
+            background_color=theme.BUTTON_BG,
             color=theme.GOLD,
         )
         self._start_btn.bind(on_press=self._toggle)
@@ -2330,10 +2329,9 @@ class FocusWidget(BoxLayout):
             text='START',
             font_size=theme.font(theme.FONT_BODY_REGULAR),
             bold=True,
-            size_hint=(None, None),
-            size=(200, 45),
-            pos_hint={'center_x': 0.5},
-            bg_color=theme.BUTTON_BG,
+            size_hint_y=None,
+            height=44,
+            background_color=theme.BUTTON_BG,
             color=theme.GOLD,
         )
         self._start_btn.bind(on_press=self._toggle)
@@ -2696,6 +2694,10 @@ class StroopWidget(BoxLayout):
 
     def start_task(self):
         self._start()
+
+    def stop(self):
+        if self._is_running:
+            self._toggle()
 
     def _toggle(self, *args):
         if self._is_running:
@@ -3742,6 +3744,7 @@ from kivy.uix.boxlayout import BoxLayout
 from kivy.uix.label import Label
 from kivy.uix.togglebutton import ToggleButton
 from kivy.graphics import Color, RoundedRectangle, Rectangle
+from kivy.clock import Clock
 
 
 class MonitoringScreen(BoxLayout):
@@ -4770,11 +4773,6 @@ from kivy.app import App
 from kivy.core.window import Window
 from kivy.uix.floatlayout import FloatLayout
 
-# Portrait mobile phone aspect ratio (like iPhone 14: 390x844)
-Window.size = (390, 844)
-
-
-
 class NeuroMentorApp(App):
     """Main NeuroMentor Kivy Application."""
 
@@ -4790,29 +4788,28 @@ class NeuroMentorApp(App):
                 ])
             except ImportError:
                 pass
-
-        # Lock orientation to portrait on Android via jnius
-        try:
-            from jnius import autoclass
-            activity = autoclass('org.kivy.android.PythonActivity').mActivity
-            activity.setRequestedOrientation(1)  # 1 = SCREEN_ORIENTATION_PORTRAIT
-        except ImportError:
-            pass  # Not on Android, skip
-
+            # Lock orientation to portrait on Android via jnius
+            try:
+                from jnius import autoclass
+                activity = autoclass('org.kivy.android.PythonActivity').mActivity
+                activity.setRequestedOrientation(1)  # 1 = SCREEN_ORIENTATION_PORTRAIT
+            except ImportError:
+                pass  # Not on Android, skip
         self.title = 'NeuroMentor'
-
-        # Set dark background
-        Window.clearcolor = theme.BG_DARK
-
+        # Set dark background (fallback for desktop)
+        try:
+            Window.clearcolor = theme.BG_DEEP
+        except Exception:
+            Window.clearcolor = (0.02, 0.02, 0.04, 1)
         # Create app state
         self.app_state = AppState()
-
         # Root container
         from kivy.uix.boxlayout import BoxLayout
         self.root_container = BoxLayout(
             orientation='vertical',
             padding=[10, 10, 10, 10],
-            spacing=10
+            spacing=10,
+            size_hint=(1, 1)
         )
 
         # Show login screen initially
