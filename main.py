@@ -1,25 +1,116 @@
 """
-Unified NeuroMentor App
+NeuroMentor — Unified App (Phase 2 Final)
+Android 14 / API 34 compatible.
+Voice Assistant: ESP32 → TCP/Serial → Whisper → Ollama → UI
 """
+
+# ============================================================
+# Kivy config MUST come before any other kivy import
+# ============================================================
+from kivy.config import Config
+Config.set('input', 'mouse', 'mouse,multitouch_on_demand')
+Config.set('graphics', 'rotation', '0')
+
+# ============================================================
+# Standard library imports
+# ============================================================
+import os
+import re
+import json
+import math
+import time
+import wave
+import socket
+import random
+import threading
+import traceback
+from io import StringIO
+from collections import deque
+from dataclasses import dataclass
+from datetime import datetime
+
+# ============================================================
+# Kivy imports
+# ============================================================
 from kivy.metrics import sp, dp
+from kivy.app import App
+from kivy.core.window import Window
+from kivy.utils import platform
+from kivy.clock import Clock
+from kivy.animation import Animation
+from kivy.event import EventDispatcher
+from kivy.properties import (
+    ObjectProperty, NumericProperty, StringProperty, BooleanProperty
+)
 from kivy.uix.label import Label
+from kivy.uix.widget import Widget
+from kivy.uix.boxlayout import BoxLayout
+from kivy.uix.scrollview import ScrollView
+from kivy.uix.floatlayout import FloatLayout
 from kivy.uix.button import Button
+from kivy.uix.textinput import TextInput
+from kivy.uix.togglebutton import ToggleButton
+from kivy.uix.popup import Popup
+from kivy.uix.screenmanager import ScreenManager, Screen
 from kivy.uix.behaviors import ButtonBehavior
+from kivy.graphics import (
+    Color, RoundedRectangle, Rectangle, Line, Ellipse
+)
+from kivy.graphics.texture import Texture
+
+if platform != 'android':
+    Window.size = (390, 844)
+
+# ============================================================
+# Optional heavy imports — graceful fallback on missing deps
+# ============================================================
+try:
+    import serial as _serial_mod
+    _HAS_SERIAL = True
+except ImportError:
+    _HAS_SERIAL = False
+
+try:
+    import whisper as _whisper_mod
+    _HAS_WHISPER = True
+except ImportError:
+    _HAS_WHISPER = False
+
+try:
+    import requests as _requests_mod
+    _HAS_REQUESTS = True
+except ImportError:
+    _HAS_REQUESTS = False
+
+try:
+    import joblib
+    import numpy as np
+    _HAS_SKLEARN = True
+except ImportError:
+    _HAS_SKLEARN = False
+
+try:
+    import numpy as np
+    _HAS_NUMPY = True
+except ImportError:
+    _HAS_NUMPY = False
+
+try:
+    import joblib as _joblib_compat
+    _HAS_JOBLIB = True
+except ImportError:
+    _HAS_JOBLIB = False
 
 
 # ============================================================
-# Reusable UI base components (replaces global monkey-patching)
+# AutoLabel and AutoButton
 # ============================================================
-
-
 class AutoLabel(Label):
-    """Label with automatic text wrapping and dynamic height.
-    Prevents vertical letter stacking and ensures word wrapping.
-    """
+    """Label with automatic text wrapping and dynamic height."""
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
         self.size_hint_y = None
-        self.halign = 'center'
+        self.halign = kwargs.get('halign', 'left')
         self.valign = 'middle'
         self.shorten = False
         self.bind(width=self._update_text_size)
@@ -31,13 +122,11 @@ class AutoLabel(Label):
         self.text_size = (self.width - dp(16), None)
 
     def _update_height(self, *args):
-        self.height = self.texture_size[1]
+        self.height = max(self.texture_size[1] + dp(4), dp(20))
 
 
 class AutoButton(ButtonBehavior, Label):
-    """Button with automatic text wrapping, centered text, and dynamic height.
-    Use for action buttons where text length may vary.
-    """
+    """Button with automatic text wrapping and dynamic height."""
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
         self.size_hint_y = None
@@ -47,139 +136,78 @@ class AutoButton(ButtonBehavior, Label):
         self.bind(texture_size=self._update_height)
 
     def _update_text_size(self, *args):
-        self.text_size = (self.width, None)
+        if self.width < dp(120):
+            return
+        self.text_size = (self.width - dp(16), None)
 
     def _update_height(self, *args):
-        self.height = max(self.texture_size[1], dp(40))
+        self.height = max(self.texture_size[1], dp(48))
 
 
 # ============================================================
-# File: theme.py
+# theme
 # ============================================================
-
 class theme:
-    """
-    NeuroMentor Theme Configuration
-    Charcoal / Gold / Amber palette.
-    All colors are RGBA tuples (0-1 range) for Kivy.
-    """
+    GOLD = (0.435, 0.753, 0.945, 1)
+    TEAL = (0.000, 0.470, 0.831, 1)
+    RED  = (0.090, 0.231, 0.353, 1)
 
+    BG_DARK      = (0.051, 0.141, 0.220, 1)
+    PANEL_BG     = (0.085, 0.200, 0.333, 1)
+    CARD_BG      = (0.109, 0.235, 0.376, 1)
+    BORDER_DARK  = (0.070, 0.187, 0.286, 1)
+    BORDER_LIGHT = (0.435, 0.753, 0.945, 1)
 
-    # ============================================================
-    # COLOR PALETTE
-    # ============================================================
+    TEXT_PRIMARY   = (0.941, 0.965, 0.980, 1)
+    TEXT_SECONDARY = (0.757, 0.863, 0.941, 1)
+    TEXT_MUTED     = (0.627, 0.765, 0.882, 1)
 
-    # Primary accent - Mustard
-    GOLD = (0.647, 0.486, 0.263, 1)          # #a57c43
+    INPUT_BG     = (0.051, 0.102, 0.169, 1)
+    INPUT_BORDER = (0.435, 0.753, 0.945, 1)
 
-    # Secondary accent - Tan
-    TEAL = (0.741, 0.608, 0.416, 1)          # #bd9b6a
+    SIDEBAR_BG     = (0.085, 0.200, 0.333, 1)
+    SIDEBAR_BORDER = (0.070, 0.187, 0.286, 1)
+    DARK_CARD      = (0.109, 0.235, 0.376, 1)
+    BUTTON_BG      = (0.109, 0.235, 0.376, 1)
+    DANGER_BUTTON_BG = (0.118, 0.631, 0.969, 1)
+    TRANSPARENT    = (0, 0, 0, 0)
 
-    # Danger/Stress - Burgundy
-    RED = (0.439, 0.184, 0.188, 1)           # #702f30
-
-    # Backgrounds
-    BG_DARK = (0.176, 0.231, 0.216, 1)       # #2d3b37
-    PANEL_BG = (0.220, 0.196, 0.200, 1)      # #383233
-    CARD_BG = (0.260, 0.236, 0.240, 1)       # #423c3d
-
-    # Borders
-    BORDER_DARK = (0.220, 0.196, 0.200, 1)   # #383233
-    BORDER_LIGHT = (0.741, 0.608, 0.416, 1)  # #bd9b6a
-
-    # Text colors
-    TEXT_PRIMARY = (0.898, 0.871, 0.773, 1)   # #e5dec5
-    TEXT_SECONDARY = (0.839, 0.733, 0.682, 1) # #d6bbae
-    TEXT_MUTED = (0.650, 0.610, 0.550, 1)     # Muted ivory
-
-    # Input
-    INPUT_BG = (0.160, 0.136, 0.140, 1)      # #292324
-    INPUT_BORDER = (0.741, 0.608, 0.416, 1)   # #bd9b6a
-
-    # Additional UI colors
-    SIDEBAR_BG = (0.220, 0.196, 0.200, 1)    # #383233
-    SIDEBAR_BORDER = (0.176, 0.231, 0.216, 1) # #2d3b37
-    DARK_CARD = (0.176, 0.231, 0.216, 1)     # #2d3b37
-    BUTTON_BG = (0.260, 0.236, 0.240, 1)     # #423c3d
-    DANGER_BUTTON_BG = (0.439, 0.184, 0.188, 1) # #702f30
-
-    # Transparent
-    TRANSPARENT = (0, 0, 0, 0)
-
-
-    # ============================================================
-    # FONT SIZES — plain integers, apply sp() at runtime via font()
-    # ============================================================
-
-    FONT_TITLE_LARGE = 26
-    FONT_TITLE_MEDIUM = 22
+    FONT_TITLE_LARGE   = 26
+    FONT_TITLE_MEDIUM  = 22
     FONT_HEADING_LARGE = 20
-    FONT_HEADING_MEDIUM = 18
-    FONT_BODY_LARGE = 16
-    FONT_BODY_REGULAR = 14
-    FONT_BODY_SMALL = 12
+    FONT_HEADING_MEDIUM= 18
+    FONT_BODY_LARGE    = 16
+    FONT_BODY_REGULAR  = 14
+    FONT_BODY_SMALL    = 12
     FONT_DISPLAY_LARGE = 48
-    FONT_TIMER = 22
+    FONT_TIMER         = 22
 
     @staticmethod
     def font(size):
-        """Convert a plain integer font size to DPI-scaled sp() at runtime."""
         return sp(size)
-
-
-    # ============================================================
-    # HELPERS
-    # ============================================================
 
     @staticmethod
     def rgba_hex(hex_color, alpha=1.0):
-        """Convert hex color string to RGBA tuple."""
         hex_color = hex_color.lstrip('#')
         r = int(hex_color[0:2], 16) / 255.0
         g = int(hex_color[2:4], 16) / 255.0
         b = int(hex_color[4:6], 16) / 255.0
         return (r, g, b, alpha)
 
-
     @staticmethod
     def with_alpha(color, alpha):
-        """Return a color tuple with modified alpha."""
         return (color[0], color[1], color[2], alpha)
 
 
 # ============================================================
-# File: services/rf_classifier.py
+# RF Classifier
 # ============================================================
-
-"""
-Random Forest Classifier for EEG-based mental state classification.
-Wraps a pre-trained scikit-learn RandomForestClassifier with EEG band power features.
-
-The pre-trained model expects 11 features:
-  Delta, Theta, Alpha, Beta, Gamma,
-  beta_alpha, alpha_theta, beta_theta, gamma_beta,
-  beta_minus_alpha, alpha_plus_theta
-
-Labels: Baseline=0, Focused=1, Stressed=2  (from LabelEncoder)
-"""
-import os
-from dataclasses import dataclass
-
-try:
-    import joblib
-    import numpy as np
-    _HAS_SKLEARN = True
-except ImportError:
-    _HAS_SKLEARN = False
-
-
 @dataclass
 class EegBands:
-    """EEG frequency band power values from a single FFT window."""
     delta: float = 0.0
     theta: float = 0.0
     alpha: float = 0.0
-    beta: float = 0.0
+    beta:  float = 0.0
     gamma: float = 0.0
 
 
@@ -190,416 +218,203 @@ FEATURE_NAMES = [
     'beta_minus_alpha', 'alpha_plus_theta',
 ]
 
-
-# ============================================================
-# Safe division helper
-# ============================================================
-
-def safe_div(numerator, denominator, default=1e-9):
-    """Safe division: avoid NaN/Inf by using max() for denominator.
-    
-    Args:
-        numerator: float
-        denominator: float
-        default: minimum absolute value for denominator
-    
-    Returns:
-        numerator / max(abs(denominator), default)
-    """
-    return numerator / max(abs(denominator), default)
-
-
-# ============================================================
-# EMBEDDED MODEL DATA (Base64-encoded, no filesystem I/O)
-# ============================================================
-
-# StandardScaler (275 bytes when re-pickled) - embedded directly
 SCALER_B64 = 'gASVvwIAAAAAAACMG3NrbGVhcm4ucHJlcHJvY2Vzc2luZy5fZGF0YZSMDlN0YW5kYXJkU2NhbGVylJOUKYGUfZQojAl3aXRoX21lYW6UiIwId2l0aF9zdGSUiIwEY29weZSIjA5uX2ZlYXR1cmVzX2luX5RLC4wPbl9zYW1wbGVzX3NlZW5flIwWbnVtcHkuX2NvcmUubXVsdGlhcnJheZSMBnNjYWxhcpSTlIwFbnVtcHmUjAVkdHlwZZSTlIwCZjiUiYiHlFKUKEsDjAE8lE5OTkr/////Sv////9LAHSUYkMIAAAAAAB18kCUhpRSlIwFbWVhbl+UaAqMDF9yZWNvbnN0cnVjdJSTlGgNjAduZGFycmF5lJOUSwCFlEMBYpSHlFKUKEsBSwuFlGgPjAJmOJSJiIeUUpQoSwNoE05OTkr/////Sv////9LAHSUYolDWEwZudgyN8hAQvbgBzyg0UAtF7dGMtbMQGJR2OPLRORAMiq5uJbFE0GLMbx8SKMZQLD7Q7BKce8/MWigKSBVGkAIi2N+L0goQIbig71PHtpAQaN2QKwF4ECUdJRijAR2YXJflGgaaBxLAIWUaB6HlFKUKEsBSwuFlGgkiUNYDSfWa/YosUEp+ZyxkuO8Qddf4hqlIbVB2pT65Fq/4kHEuvEFgYw8Qjayjx30ylZAyhkJCLPs3D/u5HghXlFgQLmayxx0wWNAAcVolNy70UHSxIj6sfbWQZR0lGKMBnNjYWxlX5RoGmgcSwCFlGgeh5RSlChLAUsLhZRoJIlDWJGsMibikdBA2n7MU9d/1UC+5FftN2PSQNgcar9FfuhAtv5Qs1hfFUF9wENxwhgjQC8SWGs8g+U/pkV7GN/ZJkDZph9OqiQpQASvrkQ52OBA32PLsQwr40CUdJRijBBfc2tsZWFybl92ZXJzaW9ulIwFMS44LjCUdWIu'
-
-# LabelEncoder (275 bytes when re-pickled) - embedded directly
 ENCODER_B64 = 'gASVCAEAAAAAAACMHHNrbGVhcm4ucHJlcHJvY2Vzc2luZy5fbGFiZWyUjAxMYWJlbEVuY29kZXKUk5QpgZR9lCiMCGNsYXNzZXNflIwWbnVtcHkuX2NvcmUubXVsdGlhcnJheZSMDF9yZWNvbnN0cnVjdJSTlIwFbnVtcHmUjAduZGFycmF5lJOUSwCFlEMBYpSHlFKUKEsBSwOFlGgJjAVkdHlwZZSTlIwCTziUiYiHlFKUKEsDjAF8lE5OTkr/////Sv////9LP3SUYoldlCiMCEJhc2VsaW5llIwHRm9jdXNlZJSMCFN0cmVzc2VklGV0lGKMEF9za2xlYXJuX3ZlcnNpb26UjAUxLjguMJR1Yi4='
-
-# PlaceHolder for RandomForestClassifier - format is gzip(pickled_model) -> base64
-# To embed the ~966MB RFC: gzip.compress(model_bytes, 9) -> base64.b64encode -> decode to string
-RFC_B64_COMPRESSED = None  # Will be populated with compressed model when available
+RFC_B64_COMPRESSED = None
 
 
 def _decode_model(b64_string):
-    """Decode a base64-encoded pickled model and return it."""
-    import base64
-    import pickle
+    import base64, pickle
     try:
-        model_bytes = base64.b64decode(b64_string)
-        return pickle.loads(model_bytes)
+        return pickle.loads(base64.b64decode(b64_string))
     except Exception as e:
-        print(f"[embedded_model] Failed to decode model: {e}")
+        print(f"[embedded_model] decode failed: {e}")
         return None
 
 
-def _decode_model_gzip_compressed(b64_string):
-    """Decode a gzip-compressed, base64-encoded pickled model."""
-    import base64
-    import gzip
-    import io
-    try:
-        compressed_bytes = base64.b64decode(b64_string)
-        model_bytes = gzip.decompress(compressed_bytes)
-        bio = io.BytesIO(model_bytes)
-        return joblib.load(bio)
-    except Exception as e:
-        print(f"[embedded_model] Failed to decode compressed model: {e}")
-        return None
+def safe_div(n, d, eps=1e-6):
+    return n / max(abs(d), eps)
 
 
 class RFClassifier:
-    """Random Forest classifier for EEG mental state prediction.
-
-    Classifies EEG band power features into three states:
-      Baseline (Calm), Stressed, Focused
-
-    Uses an 11-feature vector extracted from EegBands objects,
-    matching the training script's feature engineering.
-    
-    Models are loaded from embedded (base64-encoded) data at runtime,
-    with no filesystem I/O required.
-    """
-
     def __init__(self):
-        self._clf = None          # RandomForestClassifier
-        self._scaler = None       # StandardScaler
-        self._encoder = None      # LabelEncoder
-        self._is_trained: bool = False
-        self._feature_names: list = list(FEATURE_NAMES)
-        
-        # Load scaler and encoder from embedded base64 data
+        self._clf     = None
+        self._scaler  = None
+        self._encoder = None
+        self._is_trained = False
+        self._feature_names = list(FEATURE_NAMES)
         self._load_from_embedded()
-    
+
     def _load_from_embedded(self):
-        """Load scaler, encoder, and RFC from embedded base64-encoded data.
-        
-        All model data is embedded directly in this file as base64 strings.
-        No filesystem I/O required except for fallback RFC loading.
-        """
         if not _HAS_SKLEARN:
             return
-        
-        # Load scaler from base64
         if SCALER_B64:
             try:
                 self._scaler = _decode_model(SCALER_B64)
-                if self._scaler is not None:
-                    print("[RFClassifier] Scaler loaded from embedded data")
             except Exception as e:
-                print(f"[RFClassifier] Failed to load scaler from embedded data: {e}")
-        
-        # Load encoder from base64
+                print(f"[RFClassifier] scaler decode error: {e}")
         if ENCODER_B64:
             try:
                 self._encoder = _decode_model(ENCODER_B64)
-                if self._encoder is not None:
-                    print("[RFClassifier] Encoder loaded from embedded data")
             except Exception as e:
-                print(f"[RFClassifier] Failed to load encoder from embedded data: {e}")
-        
-        # Try to load RFC from embedded compressed base64
+                print(f"[RFClassifier] encoder decode error: {e}")
         if RFC_B64_COMPRESSED:
+            import base64, gzip, io
             try:
-                self._clf = _decode_model_gzip_compressed(RFC_B64_COMPRESSED)
-                if self._clf is not None:
-                    self._is_trained = True
-                    print("[RFClassifier] RandomForestClassifier loaded from embedded data")
-                    return
+                data = gzip.decompress(base64.b64decode(RFC_B64_COMPRESSED))
+                self._clf = joblib.load(io.BytesIO(data))
+                self._is_trained = True
+                return
             except Exception as e:
-                print(f"[RFClassifier] Failed to load RFC from embedded data: {e}")
-        
-        # Fallback: load clf from disk
+                print(f"[RFClassifier] compressed RFC decode error: {e}")
         self._load_clf_from_disk()
-    
+
     def _load_clf_from_disk(self):
-        """Load RandomForestClassifier from disk (temporary fallback).
-        
-        TODO: Replace with embedded base64 once compression is applied.
-        """
         if not _HAS_SKLEARN:
             return
-        
-        # Try common locations
-        model_paths = [
-            os.path.join(os.path.dirname(os.path.abspath(__file__)), 'rf_model', 'rf_model', 'rf_eeg_model.pkl'),
-            os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'rf_model', 'rf_model', 'rf_eeg_model.pkl'),
+        try:
+            app = App.get_running_app()
+            data_root = app.user_data_dir if app else os.path.dirname(os.path.abspath(__file__))
+        except Exception:
+            data_root = os.path.dirname(os.path.abspath(__file__))
+
+        candidates = [
+            os.path.join(data_root, 'rf_model', 'rf_model', 'rf_eeg_model.pkl'),
+            os.path.join(data_root, 'rf_eeg_model.pkl'),
+            os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                         'rf_model', 'rf_model', 'rf_eeg_model.pkl'),
         ]
-        
-        for model_path in model_paths:
-            if os.path.exists(model_path):
+        for path in candidates:
+            if os.path.exists(path):
                 try:
-                    self._clf = joblib.load(model_path)
+                    self._clf = joblib.load(path)
                     self._is_trained = True
-                    print(f"[RFClassifier] Loaded clf from {model_path}")
+                    print(f"[RFClassifier] Loaded from {path}")
                     return
                 except Exception as e:
-                    print(f"[RFClassifier] Failed to load clf from {model_path}: {e}")
-        
-        print("[RFClassifier] Warning: RandomForestClassifier not loaded")
-
-    # ----------------------------------------------------------
-    # Feature extraction — matches training script exactly
-    # ----------------------------------------------------------
+                    print(f"[RFClassifier] Load failed {path}: {e}")
+        print("[RFClassifier] No model file found — predictions return Unknown.")
 
     def build_feature_vector(self, bands: EegBands) -> list:
-        """Extract all 11 features from an EegBands object.
-
-        Feature engineering matches rf_model_training.py:
-          5 raw bands + 4 ratios + 2 arithmetic combinations
-
-        Returns:
-            list of 11 floats
-        """
         d, t, a, b, g = bands.delta, bands.theta, bands.alpha, bands.beta, bands.gamma
-
-        # Use safe_div to avoid NaN/Inf from near-zero denominators
-        beta_alpha = safe_div(b, a)
-        alpha_theta = safe_div(a, t)
-        beta_theta = safe_div(b, t)
-        gamma_beta = safe_div(g, b)
-        beta_minus_alpha = b - a
-        alpha_plus_theta = a + t
-
-        return [
+        fv = [
             d, t, a, b, g,
-            beta_alpha, alpha_theta,
-            beta_theta, gamma_beta,
-            beta_minus_alpha, alpha_plus_theta,
+            safe_div(b, a),
+            safe_div(a, t),
+            safe_div(b, t),
+            safe_div(g, b),
+            b - a,
+            a + t,
         ]
+        if _HAS_SKLEARN:
+            fv = list(np.clip(np.array(fv), -1e3, 1e3))
+        return fv
 
-    # ----------------------------------------------------------
-    # Training (for future re-training from app)
-    # ----------------------------------------------------------
-
-    def train(self, session_bands: list, session_labels: list) -> dict:
-        """Train the Random Forest on labelled EEG sessions.
-
-        Args:
-            session_bands: list of EegBands objects
-            session_labels: list of string labels ('Baseline', 'Stressed', 'Focused')
-
-        Returns:
-            dict with training metrics
-        """
+    def train(self, session_bands, session_labels):
         if not _HAS_SKLEARN:
-            raise RuntimeError("scikit-learn / joblib is not installed")
-
+            raise RuntimeError("scikit-learn not installed")
         from sklearn.ensemble import RandomForestClassifier
         from sklearn.preprocessing import StandardScaler, LabelEncoder
-        from sklearn.model_selection import cross_val_score, train_test_split
+        from sklearn.model_selection import cross_val_score
 
-        # Build feature matrix
         X = np.array([self.build_feature_vector(b) for b in session_bands])
         y = np.array(session_labels)
-
-        # Encode labels
         self._encoder = LabelEncoder()
-        y_encoded = self._encoder.fit_transform(y)
-
-        # Fit scaler
+        y_enc = self._encoder.fit_transform(y)
         self._scaler = StandardScaler()
-        X_scaled = self._scaler.fit_transform(X)
+        Xs = self._scaler.fit_transform(X)
 
-        # Cross-validation
         clf_cv = RandomForestClassifier(
-            n_estimators=700, max_depth=None, min_samples_split=3,
-            min_samples_leaf=1, random_state=42, n_jobs=-1,
-        )
-        cv_scores = cross_val_score(clf_cv, X_scaled, y_encoded, cv=5, scoring='accuracy')
+            n_estimators=200, max_depth=20,
+            min_samples_split=3, min_samples_leaf=1,
+            random_state=42, n_jobs=1)
+        cv = cross_val_score(clf_cv, Xs, y_enc, cv=5, scoring='accuracy')
 
-        # Final training
         self._clf = RandomForestClassifier(
-            n_estimators=700, max_depth=None, min_samples_split=3,
-            min_samples_leaf=1, random_state=42, n_jobs=-1,
-        )
-        self._clf.fit(X_scaled, y_encoded)
+            n_estimators=200, max_depth=20,
+            min_samples_split=3, min_samples_leaf=1,
+            random_state=42, n_jobs=1)
+        self._clf.fit(Xs, y_enc)
         self._is_trained = True
 
-        # Class distribution
         unique, counts = np.unique(y, return_counts=True)
-        class_dist = {str(u): int(c) for u, c in zip(unique, counts)}
-
         return {
-            'cv_accuracy': float(np.mean(cv_scores)),
-            'cv_std': float(np.std(cv_scores)),
-            'feature_importances': dict(zip(self._feature_names, self._clf.feature_importances_.tolist())),
+            'cv_accuracy': float(np.mean(cv)),
+            'cv_std': float(np.std(cv)),
+            'feature_importances': dict(zip(self._feature_names,
+                                            self._clf.feature_importances_.tolist())),
             'n_samples': len(y),
-            'class_distribution': class_dist,
+            'class_distribution': {str(u): int(c) for u, c in zip(unique, counts)},
         }
 
-    # ----------------------------------------------------------
-    # Prediction
-    # ----------------------------------------------------------
-
     def predict(self, bands: EegBands) -> str:
-        """Predict mental state label from a single EEG window.
-
-        Returns:
-            str label ('Baseline', 'Stressed', 'Focused') or 'Unknown'
-        """
         if not _HAS_SKLEARN:
-            return "Baseline"
+            return 'Unknown'
         if not self._is_trained or self._clf is None or self._scaler is None:
             return 'Unknown'
-
-        fv = self.build_feature_vector(bands)
-        if _HAS_SKLEARN:
-            X = np.array([fv])
-            X_scaled = self._scaler.transform(X)
-            pred = self._clf.predict(X_scaled)[0]
-            if self._encoder is not None:
-                return str(self._encoder.inverse_transform([pred])[0])
-            return str(pred)
-        return 'Unknown'
+        X = np.array([self.build_feature_vector(bands)])
+        Xs = self._scaler.transform(X)
+        pred = self._clf.predict(Xs)[0]
+        if self._encoder is not None:
+            return str(self._encoder.inverse_transform([pred])[0])
+        return str(pred)
 
     def predict_proba(self, bands: EegBands) -> dict:
-        """Predict class probabilities from a single EEG window.
-
-        Returns:
-            dict e.g. {'Baseline': 0.7, 'Stressed': 0.1, 'Focused': 0.2}
-        """
         if not self._is_trained or self._clf is None or self._scaler is None:
             return {}
-
-        fv = self.build_feature_vector(bands)
-        if _HAS_SKLEARN:
-            X = np.array([fv])
-            X_scaled = self._scaler.transform(X)
-            proba = self._clf.predict_proba(X_scaled)[0]
-            if self._encoder is not None:
-                labels = self._encoder.inverse_transform(range(len(proba)))
-                return {str(l): float(p) for l, p in zip(labels, proba)}
-            return {str(i): float(p) for i, p in enumerate(proba)}
-        return {}
-
-    # ----------------------------------------------------------
-    # Persistence — uses joblib (matches training script)
-    # ----------------------------------------------------------
+        X = np.array([self.build_feature_vector(bands)])
+        Xs = self._scaler.transform(X)
+        proba = self._clf.predict_proba(Xs)[0]
+        if self._encoder is not None:
+            labels = self._encoder.inverse_transform(range(len(proba)))
+            return {str(l): float(p) for l, p in zip(labels, proba)}
+        return {str(i): float(p) for i, p in enumerate(proba)}
 
     def save(self, dirpath: str):
-        """Save trained model, scaler, and encoder to directory via joblib."""
         if not _HAS_SKLEARN:
-            raise RuntimeError("joblib is not installed")
+            raise RuntimeError("joblib not installed")
         os.makedirs(dirpath, exist_ok=True)
-        joblib.dump(self._clf, os.path.join(dirpath, 'rf_eeg_model.pkl'))
-        joblib.dump(self._scaler, os.path.join(dirpath, 'rf_scaler.pkl'))
+        joblib.dump(self._clf,     os.path.join(dirpath, 'rf_eeg_model.pkl'))
+        joblib.dump(self._scaler,  os.path.join(dirpath, 'rf_scaler.pkl'))
         if self._encoder is not None:
             joblib.dump(self._encoder, os.path.join(dirpath, 'rf_encoder.pkl'))
 
     def load(self, dirpath: str) -> bool:
-        """Load model, scaler, and encoder from a directory of joblib pkl files.
-
-        Expects:
-          dirpath/rf_eeg_model.pkl
-          dirpath/rf_scaler.pkl
-          dirpath/rf_encoder.pkl
-
-        Returns:
-            True if loaded successfully.
-        """
         if not _HAS_SKLEARN:
-            print("[RFClassifier] joblib/numpy not available — cannot load model")
             return False
-
-        model_path = os.path.join(dirpath, 'rf_eeg_model.pkl')
-        scaler_path = os.path.join(dirpath, 'rf_scaler.pkl')
-        encoder_path = os.path.join(dirpath, 'rf_encoder.pkl')
-
-        if not os.path.exists(model_path) or not os.path.exists(scaler_path):
-            print(f"[RFClassifier] Model files not found in {dirpath}")
+        mp  = os.path.join(dirpath, 'rf_eeg_model.pkl')
+        sp2 = os.path.join(dirpath, 'rf_scaler.pkl')
+        ep  = os.path.join(dirpath, 'rf_encoder.pkl')
+        if not os.path.exists(mp) or not os.path.exists(sp2):
             return False
-
         try:
-            self._clf = joblib.load(model_path)
-            self._scaler = joblib.load(scaler_path)
-            if os.path.exists(encoder_path):
-                self._encoder = joblib.load(encoder_path)
+            self._clf    = joblib.load(mp)
+            self._scaler = joblib.load(sp2)
+            if os.path.exists(ep):
+                self._encoder = joblib.load(ep)
             self._is_trained = True
-            print(f"[RFClassifier] Model loaded successfully from {dirpath}")
             return True
         except Exception as e:
-            print(f"[RFClassifier] Failed to load model: {e}")
+            print(f"[RFClassifier] load failed: {e}")
             self._is_trained = False
             return False
 
-    # ----------------------------------------------------------
-    # Properties
-    # ----------------------------------------------------------
-
     @property
-    def is_trained(self) -> bool:
+    def is_trained(self):
         return self._is_trained
 
 
 # ============================================================
-# File: tools/compatibility_check.py
+# Compatibility check helpers
 # ============================================================
-
-"""
-NeuroMentor — Pipeline × Model Compatibility Diagnostic
-========================================================
-Standalone tool that verifies the EXG sensor data pipeline
-is fully aligned with the saved Random Forest model.
-
-Run standalone:
-    python -m tools.compatibility_check
-
-Or call from app code:
-    output_text = run_compatibility_check()
-"""
-import os
-import sys
-import math
-import glob
-import traceback
-from io import StringIO
-
-# ---------------------------------------------------------------------------
-# Ensure project root is on path so we can import services/
-# ---------------------------------------------------------------------------
-_PROJECT_ROOT = os.path.dirname(os.path.abspath(__file__))
-
-# ---------------------------------------------------------------------------
-# Import project modules (read-only — never modify them)
-# ---------------------------------------------------------------------------
-
-try:
-    import numpy as np
-    _HAS_NUMPY = True
-except ImportError:
-    _HAS_NUMPY = False
-
-try:
-    import joblib
-    _HAS_JOBLIB = True
-except ImportError:
-    _HAS_JOBLIB = False
-
-# ═══════════════════════════════════════════════════════════════════════════
-# DSP PIPELINE CONSTANTS
-# ═══════════════════════════════════════════════════════════════════════════
-# These mirror the standard NeuroMentor EXG pipeline.  Because
-# dsp_pipeline.py does not yet exist in the Kivy codebase, we define
-# the canonical values here so every check is self-contained.
-# When dsp_pipeline.py is eventually added these MUST be kept in sync.
-# ═══════════════════════════════════════════════════════════════════════════
-
-# ADC conversion — ADS1299 defaults
 ADC_BITS       = 24
-VREF           = 4.5         # Volts
+VREF           = 4.5
 PGA_GAIN       = 24
-ADC_RESOLUTION = (2 ** (ADC_BITS - 1)) - 1  # 8388607
+ADC_RESOLUTION = (2 ** (ADC_BITS - 1)) - 1
+SAMPLE_RATE    = 250
+WINDOW_SIZE    = 256
+OVERLAP        = 128
 
-# Sampling & windowing
-SAMPLE_RATE    = 250         # Hz
-WINDOW_SIZE    = 256         # samples
-OVERLAP        = 128         # samples
-
-# Standard clinical EEG bands (Hz)
 BAND_BOUNDARIES = {
     'delta': (0.5,  4.0),
     'theta': (4.0,  8.0),
@@ -607,819 +422,259 @@ BAND_BOUNDARIES = {
     'beta':  (13.0, 30.0),
     'gamma': (30.0, 45.0),
 }
-
-# Expected classifier labels
 EXPECTED_LABELS = ['Baseline', 'Focused', 'Stressed']
 
-# ---------------------------------------------------------------------------
-# Counters
-# ---------------------------------------------------------------------------
-_pass = 0
-_fail = 0
-_warn = 0
-_fail_details: list = []
-_buf = StringIO()
+_pass_c = _fail_c = _warn_c = 0
+_fail_details_c = []
+_buf_c = StringIO()
 
 
-def _p(msg: str = ''):
-    """Print to both stdout and buffer."""
+def _p(msg=''):
+    global _buf_c
     print(msg)
-    _buf.write(msg + '\n')
+    _buf_c.write(msg + '\n')
 
 
-def _PASS(msg: str):
-    global _pass
-    _pass += 1
-    _p(f'  ✓ PASS   {msg}')
+def _PASS(msg): global _pass_c; _pass_c += 1; _p(f'  ✓ PASS   {msg}')
+def _FAIL(msg): global _fail_c; _fail_c += 1; _fail_details_c.append(msg); _p(f'  ✗ FAIL   {msg}')
+def _WARN(msg): global _warn_c; _warn_c += 1; _p(f'  ⚠ WARN   {msg}')
+def _header(t): _p(''); _p('─'*60); _p(f'  {t}'); _p('─'*60)
 
 
-def _FAIL(msg: str):
-    global _fail
-    _fail += 1
-    _fail_details.append(msg)
-    _p(f'  ✗ FAIL   {msg}')
+def _compute_band_powers_fft(signal_data, sr, ws):
+    if not _HAS_NUMPY: return {}
+    win  = np.hanning(ws)
+    spec = np.fft.rfft(signal_data[:ws] * win)
+    psd  = (np.abs(spec)**2) / ws
+    freqs= np.fft.rfftfreq(ws, 1.0/sr)
+    return {n: float(np.sum(psd[(freqs >= lo) & (freqs < hi)]))
+            for n, (lo, hi) in BAND_BOUNDARIES.items()}
 
-
-def _WARN(msg: str):
-    global _warn
-    _warn += 1
-    _p(f'  ⚠ WARN   {msg}')
-
-
-def _header(title: str):
-    _p('')
-    _p('─' * 60)
-    _p(f'  {title}')
-    _p('─' * 60)
-
-
-# ═══════════════════════════════════════════════════════════════════════════
-# CHECK GROUP 1: ADC CONVERSION
-# ═══════════════════════════════════════════════════════════════════════════
 
 def _check_adc_conversion():
     _header('CHECK 1 — ADC CONVERSION')
+    scale = (VREF / ADC_RESOLUTION / PGA_GAIN) * 1e6
+    fs = ADC_RESOLUTION * scale; ms = (ADC_RESOLUTION // 2) * scale
+    _PASS(f'Full-scale {fs:.2f} µV') if 100 < fs < 300_000 else _FAIL(f'Full-scale {fs:.2f} µV out of range')
+    _PASS(f'Mid-scale {ms:.2f} µV')  if 50 < ms < 150_000  else _FAIL(f'Mid-scale {ms:.2f} µV out of range')
+    c = 50.0 / scale
+    _PASS(f'50µV → {c:.1f} counts') if c >= 1 else _FAIL(f'50µV → {c:.4f} counts (unresolvable)')
 
-    scale = (VREF / ADC_RESOLUTION / PGA_GAIN) * 1e6  # µV per count
-
-    full_scale_uv = ADC_RESOLUTION * scale
-    mid_scale_uv  = (ADC_RESOLUTION // 2) * scale
-
-    _p(f'  ADC bits          : {ADC_BITS}')
-    _p(f'  VREF              : {VREF} V')
-    _p(f'  PGA gain          : {PGA_GAIN}')
-    _p(f'  ADC resolution    : {ADC_RESOLUTION}')
-    _p(f'  µV per count      : {scale:.6f}')
-    _p(f'  Full-scale output : {full_scale_uv:.2f} µV')
-    _p(f'  Mid-scale output  : {mid_scale_uv:.2f} µV')
-
-    # Full-scale must be within absolute EEG range (1 – 500 µV is generous;
-    # the ADC full-scale will be much larger — that is expected because the
-    # ADC can represent larger signals.  What matters is that the *scale
-    # factor* is correct, i.e. a typical 50 µV scalp signal uses a
-    # meaningful portion of the ADC range.)
-    if 100 < full_scale_uv < 300_000:
-        _PASS(f'Full-scale {full_scale_uv:.2f} µV is within sensor range')
-    else:
-        _FAIL(f'Full-scale {full_scale_uv:.2f} µV is outside expected sensor range')
-
-    # Mid-scale should be within a broadly reasonable range
-    if 50 < mid_scale_uv < 150_000:
-        _PASS(f'Mid-scale {mid_scale_uv:.2f} µV is within reasonable range')
-    else:
-        _FAIL(f'Mid-scale {mid_scale_uv:.2f} µV is outside expected range')
-
-    # Check that 50 µV (typical scalp EEG) maps to a sensible ADC count
-    counts_for_50uv = 50.0 / scale
-    if counts_for_50uv >= 1:
-        _PASS(f'50 µV signal → {counts_for_50uv:.1f} ADC counts (resolvable)')
-    else:
-        _FAIL(f'50 µV signal → {counts_for_50uv:.4f} ADC counts (too few — cannot resolve)')
-
-
-# ═══════════════════════════════════════════════════════════════════════════
-# CHECK GROUP 2: SAMPLE RATE AND WINDOW
-# ═══════════════════════════════════════════════════════════════════════════
 
 def _check_sample_rate_and_window():
     _header('CHECK 2 — SAMPLE RATE & WINDOW')
+    nyq = SAMPLE_RATE / 2; fr = SAMPLE_RATE / WINDOW_SIZE
+    hb  = max(hi for _, hi in BAND_BOUNDARIES.values())
+    _PASS(f'Nyquist {nyq}Hz ≥ {hb}Hz') if nyq >= hb else _FAIL(f'Nyquist {nyq}Hz < {hb}Hz')
+    edges = sorted({e for lo, hi in BAND_BOUNDARIES.values() for e in (lo, hi)})
+    mg = min(b - a for a, b in zip(edges, edges[1:]))
+    _PASS(f'Freq res {fr:.4f} ≤ {mg}Hz') if fr <= mg else _FAIL(f'Freq res {fr:.4f} > {mg}Hz')
+    _PASS(f'Overlap {OVERLAP} < {WINDOW_SIZE}') if OVERLAP < WINDOW_SIZE else _FAIL('Overlap ≥ window')
 
-    nyquist = SAMPLE_RATE / 2.0
-    freq_res = SAMPLE_RATE / WINDOW_SIZE  # Hz per bin
-    highest_band = max(hi for _, hi in BAND_BOUNDARIES.values())
-
-    _p(f'  Sample rate       : {SAMPLE_RATE} Hz')
-    _p(f'  Window size       : {WINDOW_SIZE} samples')
-    _p(f'  Overlap           : {OVERLAP} samples')
-    _p(f'  Nyquist frequency : {nyquist} Hz')
-    _p(f'  FFT resolution    : {freq_res:.4f} Hz/bin')
-    _p(f'  Highest band edge : {highest_band} Hz')
-
-    # Nyquist covers highest band
-    if nyquist >= highest_band:
-        _PASS(f'Nyquist {nyquist} Hz ≥ highest band edge {highest_band} Hz')
-    else:
-        _FAIL(f'Nyquist {nyquist} Hz < highest band edge {highest_band} Hz — aliasing!')
-
-    # Frequency resolution fine enough to separate adjacent boundaries
-    all_edges = sorted(set(
-        edge for lo, hi in BAND_BOUNDARIES.values() for edge in (lo, hi)
-    ))
-    min_gap = min(b - a for a, b in zip(all_edges, all_edges[1:]))
-    if freq_res <= min_gap:
-        _PASS(f'Freq resolution {freq_res:.4f} Hz ≤ min band gap {min_gap} Hz')
-    else:
-        _FAIL(f'Freq resolution {freq_res:.4f} Hz > min band gap {min_gap} Hz — bins fall between bands')
-
-    # Overlap < window
-    if OVERLAP < WINDOW_SIZE:
-        _PASS(f'Overlap {OVERLAP} < window size {WINDOW_SIZE}')
-    else:
-        _FAIL(f'Overlap {OVERLAP} ≥ window size {WINDOW_SIZE}')
-
-
-# ═══════════════════════════════════════════════════════════════════════════
-# CHECK GROUP 3: BAND BOUNDARY ALIGNMENT
-# ═══════════════════════════════════════════════════════════════════════════
 
 def _check_band_boundaries():
     _header('CHECK 3 — BAND BOUNDARY ALIGNMENT')
-
-    freq_res = SAMPLE_RATE / WINDOW_SIZE
-    freqs = [i * freq_res for i in range(WINDOW_SIZE // 2 + 1)]
-
+    fr = SAMPLE_RATE / WINDOW_SIZE
+    freqs = [i * fr for i in range(WINDOW_SIZE // 2 + 1)]
     for name, (lo, hi) in BAND_BOUNDARIES.items():
-        bins_in_band = [f for f in freqs if lo <= f < hi]
-        n_bins = len(bins_in_band)
-
-        # Check if lo and hi land on (or very near) an FFT bin edge
-        lo_snap = min(freqs, key=lambda f: abs(f - lo))
-        hi_snap = min(freqs, key=lambda f: abs(f - hi))
-        lo_err = abs(lo_snap - lo)
-        hi_err = abs(hi_snap - hi)
-
-        aligned = lo_err < freq_res / 2 and hi_err < freq_res / 2
-
-        if aligned:
-            _PASS(f'{name:6s}  {lo:5.1f}–{hi:5.1f} Hz  bins={n_bins}  (aligned)')
-        else:
-            _WARN(f'{name:6s}  {lo:5.1f}–{hi:5.1f} Hz  bins={n_bins}  (lo_err={lo_err:.3f}, hi_err={hi_err:.3f})')
-
-        if n_bins < 4:
-            _WARN(f'{name:6s}  only {n_bins} bins — power estimate unreliable')
-
-
-# ═══════════════════════════════════════════════════════════════════════════
-# CHECK GROUP 4: SYNTHETIC SIGNAL END-TO-END
-# ═══════════════════════════════════════════════════════════════════════════
-
-def _compute_band_powers_fft(signal, sample_rate, window_size):
-    """Compute band powers from a signal using the same FFT approach the
-    live pipeline will use.  Returns dict of band→power."""
-    if not _HAS_NUMPY:
-        return {}
-
-    # Hann window + FFT
-    window = np.hanning(window_size)
-    windowed = signal[:window_size] * window
-    spectrum = np.fft.rfft(windowed)
-    psd = (np.abs(spectrum) ** 2) / window_size
-    freqs = np.fft.rfftfreq(window_size, d=1.0 / sample_rate)
-
-    powers = {}
-    for name, (lo, hi) in BAND_BOUNDARIES.items():
-        mask = (freqs >= lo) & (freqs < hi)
-        powers[name] = float(np.sum(psd[mask]))
-
-    return powers
+        bins = [f for f in freqs if lo <= f < hi]
+        lo_e = abs(min(freqs, key=lambda f: abs(f - lo)) - lo)
+        hi_e = abs(min(freqs, key=lambda f: abs(f - hi)) - hi)
+        aligned = lo_e < fr / 2 and hi_e < fr / 2
+        ((_PASS if aligned else _WARN))(f'{name:6s} {lo}–{hi}Hz bins={len(bins)}')
+        if len(bins) < 4: _WARN(f'{name} only {len(bins)} bins')
 
 
 def _check_synthetic_signals():
     _header('CHECK 4 — SYNTHETIC SIGNAL END-TO-END')
-
-    if not _HAS_NUMPY:
-        _FAIL('numpy not available — cannot run synthetic signal tests')
-        return
-
-    test_cases = [
-        (2,  'delta'),
-        (6,  'theta'),
-        (10, 'alpha'),
-        (20, 'beta'),
-        (40, 'gamma'),
-    ]
-
+    if not _HAS_NUMPY: _FAIL('numpy unavailable'); return
     t = np.arange(WINDOW_SIZE) / SAMPLE_RATE
-    all_ok = True
+    for freq, exp in [(2, 'delta'), (6, 'theta'), (10, 'alpha'), (20, 'beta'), (40, 'gamma')]:
+        sig = np.sin(2 * np.pi * freq * t)
+        pw  = _compute_band_powers_fft(sig, SAMPLE_RATE, WINDOW_SIZE)
+        dom = max(pw, key=pw.get)
+        _PASS(f'{freq}Hz → {dom}') if dom == exp else _FAIL(f'{freq}Hz expected {exp} got {dom}')
 
-    for freq_hz, expected_band in test_cases:
-        signal = np.sin(2 * np.pi * freq_hz * t)
-        powers = _compute_band_powers_fft(signal, SAMPLE_RATE, WINDOW_SIZE)
-
-        dominant = max(powers, key=powers.get)
-        vals = '  '.join(f'{k}={v:.4f}' for k, v in powers.items())
-
-        if dominant == expected_band:
-            _PASS(f'{freq_hz:2d} Hz → dominates {dominant:6s}   [{vals}]')
-        else:
-            _FAIL(f'{freq_hz:2d} Hz → expected {expected_band}, got {dominant}   [{vals}]')
-            all_ok = False
-
-    return all_ok
-
-
-# ═══════════════════════════════════════════════════════════════════════════
-# CHECK GROUP 5: FEATURE VECTOR CONSISTENCY
-# ═══════════════════════════════════════════════════════════════════════════
 
 def _check_feature_vector():
-    _header('CHECK 5 — FEATURE VECTOR CONSISTENCY')
-
-    if not _HAS_NUMPY:
-        _FAIL('numpy not available — cannot build feature vector')
-        return None
-
-    # ── Validate FEATURE_NAMES constant itself ──
-    EXPECTED_FEATURE_NAMES = [
-        'delta', 'theta', 'alpha', 'beta', 'gamma',
-        'beta_alpha_ratio', 'alpha_theta_ratio',
-        'beta_theta_ratio', 'gamma_beta_ratio',
-        'beta_minus_alpha', 'alpha_plus_theta',
-    ]
-    EXPECTED_N_FEATURES = 11
-
-    if len(FEATURE_NAMES) == EXPECTED_N_FEATURES:
-        _PASS(f'FEATURE_NAMES has exactly {EXPECTED_N_FEATURES} entries')
-    else:
-        _FAIL(f'FEATURE_NAMES has {len(FEATURE_NAMES)} entries, expected {EXPECTED_N_FEATURES}')
-
-    if list(FEATURE_NAMES) == EXPECTED_FEATURE_NAMES:
-        _PASS('FEATURE_NAMES matches canonical order and spelling')
-    else:
-        _FAIL('FEATURE_NAMES does not match canonical list')
-        for i, (got, exp) in enumerate(zip(FEATURE_NAMES, EXPECTED_FEATURE_NAMES)):
-            if got != exp:
-                _p(f'    [{i}] got "{got}", expected "{exp}"')
-
-    # ── Build a feature vector from a 10 Hz alpha sine ──
+    _header('CHECK 5 — FEATURE VECTOR')
+    if not _HAS_NUMPY: _FAIL('numpy unavailable'); return None
+    EXPECTED = ['delta', 'theta', 'alpha', 'beta', 'gamma',
+                'beta_alpha_ratio', 'alpha_theta_ratio', 'beta_theta_ratio',
+                'gamma_beta_ratio', 'beta_minus_alpha', 'alpha_plus_theta']
+    _PASS('FEATURE_NAMES length 11') if len(FEATURE_NAMES) == 11 else _FAIL(f'FEATURE_NAMES length {len(FEATURE_NAMES)}')
+    _PASS('FEATURE_NAMES order correct') if list(FEATURE_NAMES) == EXPECTED else _FAIL('FEATURE_NAMES mismatch')
     t = np.arange(WINDOW_SIZE) / SAMPLE_RATE
-    signal = np.sin(2 * np.pi * 10 * t)
-    powers = _compute_band_powers_fft(signal, SAMPLE_RATE, WINDOW_SIZE)
-
-    bands = EegBands(
-        delta=powers.get('delta', 0.0),
-        theta=powers.get('theta', 0.0),
-        alpha=powers.get('alpha', 0.0),
-        beta=powers.get('beta', 0.0),
-        gamma=powers.get('gamma', 0.0),
-    )
-
-    clf = RFClassifier()
-    fv = clf.build_feature_vector(bands)
-
-    _p(f'  Expected feature count : {EXPECTED_N_FEATURES}')
-    _p(f'  Actual feature count   : {len(fv)}')
-
-    if len(fv) == EXPECTED_N_FEATURES:
-        _PASS(f'Feature vector length {len(fv)} == {EXPECTED_N_FEATURES}')
-    else:
-        _FAIL(f'Feature vector length {len(fv)} ≠ {EXPECTED_N_FEATURES}')
-
-    has_nan = any(math.isnan(v) for v in fv)
-    has_inf = any(math.isinf(v) for v in fv)
-    all_finite = all(math.isfinite(v) for v in fv)
-
-    if not has_nan:
-        _PASS('No NaN values in feature vector')
-    else:
-        _FAIL('Feature vector contains NaN values')
-
-    if not has_inf:
-        _PASS('No Inf values in feature vector')
-    else:
-        _FAIL('Feature vector contains Inf values')
-
-    if all_finite:
-        _PASS('All values are finite')
-    else:
-        _FAIL('Feature vector contains non-finite values')
-
-    # Report feature values with position labels
-    _p('')
-    _p('  Feature vector values:')
-    for i, val in enumerate(fv):
-        name = FEATURE_NAMES[i] if i < len(FEATURE_NAMES) else f'idx_{i}'
-        sign = '  ' if val >= 0 else ''
-        _p(f'    [{i:2d}] {name:22s} = {sign}{val:.8f}')
-
+    pw = _compute_band_powers_fft(np.sin(2 * np.pi * 10 * t), SAMPLE_RATE, WINDOW_SIZE)
+    bands = EegBands(**{k: pw.get(k, 0.0) for k in ['delta', 'theta', 'alpha', 'beta', 'gamma']})
+    clf = RFClassifier(); fv = clf.build_feature_vector(bands)
+    _PASS(f'FV length {len(fv)}') if len(fv) == 11 else _FAIL(f'FV length {len(fv)}')
+    _PASS('No NaN')  if not any(math.isnan(v) for v in fv) else _FAIL('NaN in FV')
+    _PASS('No Inf')  if not any(math.isinf(v) for v in fv) else _FAIL('Inf in FV')
     return fv
 
 
-# ═══════════════════════════════════════════════════════════════════════════
-# CHECK GROUP 6: SAVED MODEL FILE
-# ═══════════════════════════════════════════════════════════════════════════
-
 def _find_model_directories():
-    """Find all model directories (user-specific and bundled)."""
-    data_dir = os.path.join(_PROJECT_ROOT, 'neuromentor_data')
-    bundled_dir = os.path.normpath(os.path.join(_PROJECT_ROOT, '..', 'rf_model', 'rf_model'))
-
+    pr = os.path.dirname(os.path.abspath(__file__))
     dirs = []
-
-    # User-specific model dirs
-    if os.path.isdir(data_dir):
-        for entry in os.listdir(data_dir):
-            full = os.path.join(data_dir, entry)
-            if os.path.isdir(full) and entry.endswith('_rf_model'):
-                model_file = os.path.join(full, 'rf_eeg_model.pkl')
-                if os.path.exists(model_file):
-                    dirs.append(('user', entry, full))
-
-    # Bundled model
-    bundled_model = os.path.join(bundled_dir, 'rf_eeg_model.pkl')
-    if os.path.exists(bundled_model):
-        dirs.append(('bundled', 'rf_model', bundled_dir))
-
+    dd = os.path.join(pr, 'neuromentor_data')
+    if os.path.isdir(dd):
+        for e in os.listdir(dd):
+            full = os.path.join(dd, e)
+            if os.path.isdir(full) and e.endswith('_rf_model'):
+                if os.path.exists(os.path.join(full, 'rf_eeg_model.pkl')):
+                    dirs.append(('user', e, full))
+    bd = os.path.normpath(os.path.join(pr, '..', 'rf_model', 'rf_model'))
+    if os.path.exists(os.path.join(bd, 'rf_eeg_model.pkl')):
+        dirs.append(('bundled', 'rf_model', bd))
     return dirs
 
 
-def _check_saved_model(feature_vector):
-    _header('CHECK 6 — SAVED MODEL FILES')
-
-    if not _HAS_NUMPY or not _HAS_JOBLIB:
-        _FAIL('numpy/joblib not available — cannot inspect model files')
-        return
-
-    model_dirs = _find_model_directories()
-
-    if not model_dirs:
-        _WARN('No model files found.')
-        _p('  → Complete a calibration session, then re-run this check.')
-        _p('  → Expected locations:')
-        _p(f'     neuromentor_data/<user>_rf_model/rf_eeg_model.pkl')
-        _p(f'     ../rf_model/rf_model/rf_eeg_model.pkl')
-        return
-
-    expected_n_features = 11  # hardcoded — must match the model's training format
-
-    for source, label, dirpath in model_dirs:
-        _p('')
-        _p(f'  ── Model: {label} ({source}) ──')
-        _p(f'  Path: {dirpath}')
-
-        model_path   = os.path.join(dirpath, 'rf_eeg_model.pkl')
-        scaler_path  = os.path.join(dirpath, 'rf_scaler.pkl')
-        encoder_path = os.path.join(dirpath, 'rf_encoder.pkl')
-
-        # Load model
-        try:
-            clf = joblib.load(model_path)
-            _PASS(f'rf_eeg_model.pkl loads without error')
-        except Exception as e:
-            _FAIL(f'rf_eeg_model.pkl failed to load: {e}')
-            continue
-
-        # Load scaler
-        try:
-            scaler = joblib.load(scaler_path)
-            _PASS(f'rf_scaler.pkl loads without error')
-        except Exception as e:
-            _FAIL(f'rf_scaler.pkl failed to load: {e}')
-            continue
-
-        # Load encoder (optional but expected)
-        encoder = None
-        if os.path.exists(encoder_path):
+def _check_saved_model(fv):
+    _header('CHECK 6 — SAVED MODEL')
+    if not (_HAS_NUMPY and _HAS_JOBLIB): _FAIL('numpy/joblib unavailable'); return
+    dirs = _find_model_directories()
+    if not dirs: _WARN('No model files found'); return
+    for src, lbl, dirpath in dirs:
+        _p(f'  Model: {lbl} ({src})')
+        try: clf2 = _joblib_compat.load(os.path.join(dirpath, 'rf_eeg_model.pkl')); _PASS('clf loads')
+        except Exception as e: _FAIL(f'clf load failed: {e}'); continue
+        try: sc2  = _joblib_compat.load(os.path.join(dirpath, 'rf_scaler.pkl'));    _PASS('scaler loads')
+        except Exception as e: _FAIL(f'scaler load failed: {e}'); continue
+        n = getattr(clf2, 'n_features_in_', None)
+        if n: (_PASS if n == 11 else _FAIL)(f'n_features_in_={n}')
+        if fv is not None:
             try:
-                encoder = joblib.load(encoder_path)
-                _PASS(f'rf_encoder.pkl loads without error')
-            except Exception as e:
-                _WARN(f'rf_encoder.pkl failed to load: {e}')
+                Xs = sc2.transform(np.array([fv]))
+                _PASS('scaler.transform ok')
+                pred = clf2.predict(Xs)[0]
+                _PASS(f'predict → {pred}')
+            except Exception as e: _FAIL(f'predict failed: {e}')
 
-        # Check clf.n_features_in_
-        clf_n = getattr(clf, 'n_features_in_', None)
-        if clf_n is not None:
-            if clf_n == expected_n_features:
-                _PASS(f'clf.n_features_in_ = {clf_n} matches feature vector ({expected_n_features})')
-            else:
-                _FAIL(f'clf.n_features_in_ = {clf_n} ≠ feature vector ({expected_n_features})')
-        else:
-            _WARN('clf.n_features_in_ not available')
-
-        # Check scaler.n_features_in_
-        scaler_n = getattr(scaler, 'n_features_in_', None)
-        if scaler_n is not None:
-            if scaler_n == expected_n_features:
-                _PASS(f'scaler.n_features_in_ = {scaler_n} matches feature vector ({expected_n_features})')
-            else:
-                _FAIL(f'scaler.n_features_in_ = {scaler_n} ≠ feature vector ({expected_n_features})')
-        else:
-            _WARN('scaler.n_features_in_ not available')
-
-        # Check classes
-        clf_classes = getattr(clf, 'classes_', None)
-        n_classes = getattr(clf, 'n_classes_', None)
-
-        if encoder is not None:
-            # The trained model uses integer labels; encoder maps them back
-            decoded_classes = sorted(encoder.inverse_transform(clf_classes).tolist()) if clf_classes is not None else []
-            expected_sorted = sorted(EXPECTED_LABELS)
-
-            if n_classes is not None:
-                if n_classes == len(EXPECTED_LABELS):
-                    _PASS(f'clf.n_classes_ = {n_classes} matches expected ({len(EXPECTED_LABELS)})')
-                else:
-                    _FAIL(f'clf.n_classes_ = {n_classes} ≠ expected ({len(EXPECTED_LABELS)})')
-
-            if decoded_classes == expected_sorted:
-                _PASS(f'clf.classes_ (decoded) = {decoded_classes}')
-            else:
-                _FAIL(f'clf.classes_ (decoded) = {decoded_classes}, expected {expected_sorted}')
-        else:
-            # No encoder — classes are raw
-            if clf_classes is not None:
-                _p(f'  clf.classes_ (raw) = {list(clf_classes)}')
-            if n_classes is not None:
-                if n_classes == len(EXPECTED_LABELS):
-                    _PASS(f'clf.n_classes_ = {n_classes}')
-                else:
-                    _FAIL(f'clf.n_classes_ = {n_classes} ≠ expected {len(EXPECTED_LABELS)}')
-
-        # Scaler transform
-        if feature_vector is not None:
-            try:
-                X = np.array([feature_vector])
-                X_scaled = scaler.transform(X)
-                _PASS('scaler.transform() succeeded')
-
-                max_abs = float(np.max(np.abs(X_scaled)))
-                _p(f'  Max |scaled value| : {max_abs:.4f}')
-                if max_abs <= 10.0:
-                    _PASS(f'Max |scaled value| {max_abs:.4f} ≤ 10 — amplitude scale consistent')
-                else:
-                    _WARN(f'Max |scaled value| {max_abs:.4f} > 10 — possible amplitude scale mismatch')
-
-                # Predict
-                try:
-                    pred = clf.predict(X_scaled)
-                    pred_label = pred[0]
-                    if encoder is not None:
-                        pred_label = encoder.inverse_transform(pred)[0]
-                    pred_label = str(pred_label)
-
-                    if pred_label in EXPECTED_LABELS:
-                        _PASS(f'clf.predict() → "{pred_label}" (valid label)')
-                    else:
-                        _FAIL(f'clf.predict() → "{pred_label}" (not in expected labels)')
-                except Exception as e:
-                    _FAIL(f'clf.predict() failed: {e}')
-
-                # Predict proba
-                try:
-                    proba = clf.predict_proba(X_scaled)[0]
-                    prob_sum = float(np.sum(proba))
-                    if abs(prob_sum - 1.0) < 1e-6:
-                        _PASS(f'predict_proba() sums to {prob_sum:.6f} (≈1.0)')
-                    else:
-                        _FAIL(f'predict_proba() sums to {prob_sum:.6f} (≠1.0)')
-                except Exception as e:
-                    _FAIL(f'clf.predict_proba() failed: {e}')
-
-            except Exception as e:
-                _FAIL(f'scaler.transform() failed: {e}')
-
-        # Report scaler means
-        scaler_mean = getattr(scaler, 'mean_', None)
-        if scaler_mean is not None:
-            _p('')
-            _p('  Scaler mean per feature position:')
-            for i, m in enumerate(scaler_mean):
-                name = FEATURE_NAMES[i] if i < len(FEATURE_NAMES) else f'idx_{i}'
-                _p(f'    [{i:2d}] {name:20s} = {m:.8f}')
-
-
-# ═══════════════════════════════════════════════════════════════════════════
-# CHECK GROUP 7: VERSION DRIFT DETECTION
-# ═══════════════════════════════════════════════════════════════════════════
 
 def _check_version_drift():
-    _header('CHECK 7 — VERSION DRIFT DETECTION')
+    _header('CHECK 7 — VERSION DRIFT')
+    dirs = _find_model_directories()
+    if not dirs: _WARN('No models'); return
+    cur = list(FEATURE_NAMES)
+    for _, lbl, dp2 in dirs:
+        try: clf2 = _joblib_compat.load(os.path.join(dp2, 'rf_eeg_model.pkl'))
+        except: _WARN(f'Cannot load {lbl}'); continue
+        saved = getattr(clf2, 'feature_names_in_', None)
+        if saved is None:
+            sc = os.path.join(dp2, 'feature_names.txt')
+            if os.path.exists(sc):
+                with open(sc) as f: saved = [l.strip() for l in f if l.strip()]
+        if saved: (_PASS('Feature names match') if list(saved) == cur
+                   else _FAIL('Feature name mismatch'))
+        else: _WARN('feature_names not stored in model')
 
-    model_dirs = _find_model_directories()
-
-    if not model_dirs:
-        _WARN('No model files to check for version drift.')
-        return
-
-    if not _HAS_JOBLIB:
-        _FAIL('joblib not available — cannot inspect models')
-        return
-
-    current_names = [
-        'delta', 'theta', 'alpha', 'beta', 'gamma',
-        'beta_alpha_ratio', 'alpha_theta_ratio',
-        'beta_theta_ratio', 'gamma_beta_ratio',
-        'beta_minus_alpha', 'alpha_plus_theta',
-    ]
-
-    for source, label, dirpath in model_dirs:
-        _p(f'  ── Model: {label} ({source}) ──')
-
-        # The RFClassifier stores _feature_names on the instance, but
-        # it is NOT persisted inside the pkl files.  We check for a
-        # feature_names.txt sidecar or any attribute on the saved clf.
-        model_path = os.path.join(dirpath, 'rf_eeg_model.pkl')
-        try:
-            clf = joblib.load(model_path)
-        except Exception:
-            _WARN(f'Cannot load model at {model_path}')
-            continue
-
-        saved_names = getattr(clf, 'feature_names_in_', None)
-        if saved_names is None:
-            # Try sidecar file
-            sidecar = os.path.join(dirpath, 'feature_names.txt')
-            if os.path.exists(sidecar):
-                with open(sidecar) as f:
-                    saved_names = [line.strip() for line in f if line.strip()]
-
-        if saved_names is not None:
-            saved_list = list(saved_names)
-            if saved_list == current_names:
-                _PASS(f'Feature names match current FEATURE_NAMES')
-            else:
-                _FAIL('Feature name mismatch detected:')
-                for i, (s, c) in enumerate(zip(saved_list, current_names)):
-                    if s != c:
-                        _p(f'    [{i}] model="{s}"  current="{c}"')
-                if len(saved_list) != len(current_names):
-                    _p(f'    Length mismatch: model={len(saved_list)} current={len(current_names)}')
-        else:
-            _WARN(f'Model does not store feature names — version drift cannot be auto-detected.')
-            _p('  → Recommend adding feature name storage to RFClassifier.save()')
-            _p(f'  → Current FEATURE_NAMES: {current_names}')
-
-
-# ═══════════════════════════════════════════════════════════════════════════
-# CHECK GROUP 8: FEATURE FORMULA VERIFICATION
-# ═══════════════════════════════════════════════════════════════════════════
 
 def _check_feature_formulas():
-    _header('CHECK 8 — FEATURE FORMULA VERIFICATION')
+    _header('CHECK 8 — FEATURE FORMULAS')
+    bands = EegBands(delta=2.0, theta=1.5, alpha=3.0, beta=1.0, gamma=0.5)
+    clf = RFClassifier(); fv = clf.build_feature_vector(bands)
+    expected = [2.0, 1.5, 3.0, 1.0, 0.5,
+                safe_div(1.0, 3.0), safe_div(3.0, 1.5),
+                safe_div(1.0, 1.5), safe_div(0.5, 1.0),
+                1.0 - 3.0, 3.0 + 1.5]
+    if len(fv) != 11: _FAIL(f'FV len {len(fv)}'); return
+    for i, (act, exp) in enumerate(zip(fv, expected)):
+        (_PASS if abs(act - exp) < 1e-4 else _FAIL)(
+            f'[{i}] {FEATURE_NAMES[i]} exp={exp:.4f} act={act:.4f}')
 
-    # Synthetic EegBands with known values
-    bands = EegBands(
-        delta=2.0,
-        theta=1.5,
-        alpha=3.0,
-        beta=1.0,
-        gamma=0.5,
-    )
-
-    clf = RFClassifier()
-    fv = clf.build_feature_vector(bands)
-
-    # Expected results computed from the canonical formulas
-    eps = 1e-9
-    expected = [
-        2.0,                         # [0] delta
-        1.5,                         # [1] theta
-        3.0,                         # [2] alpha
-        1.0,                         # [3] beta
-        0.5,                         # [4] gamma
-        1.0 / (3.0 + eps),           # [5] beta / alpha
-        3.0 / (1.5 + eps),           # [6] alpha / theta
-        1.0 / (1.5 + eps),           # [7] beta / theta
-        0.5 / (1.0 + eps),           # [8] gamma / beta
-        1.0 - 3.0,                   # [9] beta - alpha = -2.0
-        3.0 + 1.5,                   # [10] alpha + theta = 4.5
-    ]
-
-    feature_labels = [
-        'delta',            'theta',             'alpha',
-        'beta',             'gamma',             'beta_alpha_ratio',
-        'alpha_theta_ratio','beta_theta_ratio',  'gamma_beta_ratio',
-        'beta_minus_alpha', 'alpha_plus_theta',
-    ]
-
-    if len(fv) != 11:
-        _FAIL(f'Feature vector has {len(fv)} elements, expected 11')
-        return
-
-    _p(f'  Input bands: delta=2.0, theta=1.5, alpha=3.0, beta=1.0, gamma=0.5')
-    _p(f'  Epsilon used in denominators: {eps}')
-    _p('')
-
-    all_ok = True
-    for i in range(11):
-        actual = fv[i]
-        exp = expected[i]
-        tol = 1e-6
-        match = abs(actual - exp) < tol
-        status = 'PASS' if match else 'FAIL'
-        symbol = '✓' if match else '✗'
-
-        if match:
-            _PASS(f'[{i:2d}] {feature_labels[i]:22s}  expected={exp:12.8f}  actual={actual:12.8f}')
-        else:
-            _FAIL(f'[{i:2d}] {feature_labels[i]:22s}  expected={exp:12.8f}  actual={actual:12.8f}')
-            all_ok = False
-
-    if all_ok:
-        _p('')
-        _p('  All 11 feature formulas produce correct results.')
-    else:
-        _p('')
-        _p('  ⚠ Some feature formulas produced incorrect results!')
-
-
-# ═══════════════════════════════════════════════════════════════════════════
-# SUMMARY
-# ═══════════════════════════════════════════════════════════════════════════
-
-def _print_summary():
-    _p('')
-    _p('═' * 60)
-    _p('  COMPATIBILITY CHECK SUMMARY')
-    _p('═' * 60)
-    total = _pass + _fail + _warn
-    _p(f'  Total checks  : {total}')
-    _p(f'  Passed        : {_pass}')
-    _p(f'  Failed        : {_fail}')
-    _p(f'  Warnings      : {_warn}')
-
-    if _fail_details:
-        _p('')
-        _p('  ── FAILED CHECKS ──')
-        for i, detail in enumerate(_fail_details, 1):
-            _p(f'  {i}. {detail}')
-
-    _p('')
-    if _fail == 0:
-        _p('  ╔════════════════════════════════════════════════════════╗')
-        _p('  ║   VERDICT: COMPATIBLE                           ║')
-        _p('  ║   Safe to run live classification.               ║')
-        _p('  ╚════════════════════════════════════════════════════════╝')
-    else:
-        _p('  ╔════════════════════════════════════════════════════════╗')
-        _p('  ║   VERDICT: INCOMPATIBLE                         ║')
-        _p('  ║   Fix issues above before connecting hardware.   ║')
-        _p('  ╚════════════════════════════════════════════════════════╝')
-    _p('')
-
-
-# ═══════════════════════════════════════════════════════════════════════════
-# PUBLIC API
-# ═══════════════════════════════════════════════════════════════════════════
 
 def run_compatibility_check() -> str:
-    """Run all checks and return the full output as a string.
-
-    This is the entry point for both standalone use and in-app integration.
-    """
-    global _pass, _fail, _warn, _fail_details, _buf
-    _pass = 0
-    _fail = 0
-    _warn = 0
-    _fail_details = []
-    _buf = StringIO()
-
-    _p('╔════════════════════════════════════════════════════════╗')
-    _p('║  NEUROMENTOR PIPELINE × MODEL COMPATIBILITY DIAGNOSTIC ║')
-    _p('╚════════════════════════════════════════════════════════╝')
-
-    try:
-        _check_adc_conversion()
-    except Exception as e:
-        _FAIL(f'ADC conversion check crashed: {e}')
-
-    try:
-        _check_sample_rate_and_window()
-    except Exception as e:
-        _FAIL(f'Sample rate check crashed: {e}')
-
-    try:
-        _check_band_boundaries()
-    except Exception as e:
-        _FAIL(f'Band boundary check crashed: {e}')
-
-    try:
-        _check_synthetic_signals()
-    except Exception as e:
-        _FAIL(f'Synthetic signal check crashed: {e}')
-
+    global _pass_c, _fail_c, _warn_c, _fail_details_c, _buf_c
+    _pass_c = _fail_c = _warn_c = 0; _fail_details_c = []; _buf_c = StringIO()
+    _p('╔══════════════════════════════════════════╗')
+    _p('║  NEUROMENTOR COMPATIBILITY DIAGNOSTIC    ║')
+    _p('╚══════════════════════════════════════════╝')
+    for fn in [_check_adc_conversion, _check_sample_rate_and_window,
+               _check_band_boundaries, _check_synthetic_signals]:
+        try: fn()
+        except Exception as e: _FAIL(f'{fn.__name__} crashed: {e}')
     fv = None
-    try:
-        fv = _check_feature_vector()
-    except Exception as e:
-        _FAIL(f'Feature vector check crashed: {e}')
-
-    try:
-        _check_saved_model(fv)
-    except Exception as e:
-        _FAIL(f'Saved model check crashed: {e}')
-
-    try:
-        _check_version_drift()
-    except Exception as e:
-        _FAIL(f'Version drift check crashed: {e}')
-
-    try:
-        _check_feature_formulas()
-    except Exception as e:
-        _FAIL(f'Feature formula check crashed: {e}')
-
-    _print_summary()
-
-    return _buf.getvalue()
-
-
-# ═══════════════════════════════════════════════════════════════════════════
-# STANDALONE ENTRY POINT
-# ═══════════════════════════════════════════════════════════════════════════
-
-if False:
-    run_compatibility_check()
+    try: fv = _check_feature_vector()
+    except Exception as e: _FAIL(f'feature_vector crashed: {e}')
+    for fn in [lambda: _check_saved_model(fv), _check_version_drift, _check_feature_formulas]:
+        try: fn()
+        except Exception as e: _FAIL(f'check crashed: {e}')
+    _p('')
+    _p('═' * 44)
+    _p(f'  Passed:{_pass_c}  Failed:{_fail_c}  Warnings:{_warn_c}')
+    if _fail_c == 0:
+        _p('  VERDICT: COMPATIBLE ✓')
+    else:
+        _p('  VERDICT: INCOMPATIBLE')
+        for d in _fail_details_c: _p(f'    — {d}')
+    return _buf_c.getvalue()
 
 
 # ============================================================
-# File: app_state.py
+# AppState
 # ============================================================
-
-"""
-NeuroMentor Application State
-Observable state management using Kivy EventDispatcher (replaces Flutter Provider).
-"""
-from kivy.event import EventDispatcher
-from kivy.properties import (
-    ObjectProperty, NumericProperty, StringProperty
-)
-from datetime import datetime
-import json
-import os
-
 class UserProfile:
-    """User profile data."""
-    def __init__(self, username, name='', age='', notes='', created_date=None, scores=None, last_login=None):
-        self.username = username
-        self.name = name or username
-        self.age = age
-        self.notes = notes
+    def __init__(self, username, name='', age='', notes='',
+                 created_date=None, scores=None, last_login=None):
+        self.username     = username
+        self.name         = name or username
+        self.age          = age
+        self.notes        = notes
         self.created_date = created_date or datetime.now().isoformat()
-        self.scores = scores or []
-        self.last_login = last_login or datetime.now().isoformat()
+        self.scores       = scores or []
+        self.last_login   = last_login or datetime.now().isoformat()
 
     def to_dict(self):
-        return {
-            'username': self.username,
-            'name': self.name,
-            'age': self.age,
-            'notes': self.notes,
-            'created_date': self.created_date,
-            'scores': self.scores,
-            'last_login': self.last_login,
-        }
+        return dict(username=self.username, name=self.name, age=self.age,
+                    notes=self.notes, created_date=self.created_date,
+                    scores=self.scores, last_login=self.last_login)
 
     @classmethod
-    def from_dict(cls, data):
-        return cls(
-            username=data.get('username', ''),
-            name=data.get('name', ''),
-            age=data.get('age', ''),
-            notes=data.get('notes', ''),
-            created_date=data.get('created_date'),
-            scores=data.get('scores', []),
-            last_login=data.get('last_login'),
-        )
+    def from_dict(cls, d):
+        return cls(username=d.get('username', ''), name=d.get('name', ''),
+                   age=d.get('age', ''), notes=d.get('notes', ''),
+                   created_date=d.get('created_date'),
+                   scores=d.get('scores', []), last_login=d.get('last_login'))
 
 
 class AppState(EventDispatcher):
-    """
-    Main application state.
-    Uses Kivy properties for automatic UI binding.
-    """
-    current_user = ObjectProperty(None, allownone=True)
+    current_user        = ObjectProperty(None, allownone=True)
     selected_page_index = NumericProperty(0)
-    selected_port = StringProperty('')
+    selected_port       = StringProperty('')
 
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
-        self.users_file = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'users.json')
         self.all_users = self._load_users()
+
+    def _get_data_dir(self):
+        try:
+            app = App.get_running_app()
+            if app is not None:
+                return app.user_data_dir
+        except Exception:
+            pass
+        return os.path.dirname(os.path.abspath(__file__))
+
+    @property
+    def users_file(self):
+        return os.path.join(self._get_data_dir(), 'users.json')
 
     def _load_users(self):
         if not os.path.exists(self.users_file):
             return {}
         try:
             with open(self.users_file, 'r') as f:
-                data = json.load(f)
-                return {k: UserProfile.from_dict(v) for k, v in data.items()}
+                return {k: UserProfile.from_dict(v) for k, v in json.load(f).items()}
         except Exception as e:
             print(f"Error loading users: {e}")
             return {}
 
     def _save_users(self):
         try:
+            d = os.path.dirname(self.users_file)
+            if d:
+                os.makedirs(d, exist_ok=True)
             with open(self.users_file, 'w') as f:
                 json.dump({k: v.to_dict() for k, v in self.all_users.items()}, f, indent=4)
         except Exception as e:
@@ -1427,183 +682,98 @@ class AppState(EventDispatcher):
 
     def save_current_user_score(self, test_name, score):
         if self.current_user:
-            self.current_user.scores.append({'test': test_name, 'score': score, 'date': datetime.now().isoformat()})
+            self.current_user.scores.append(
+                {'test': test_name, 'score': score, 'date': datetime.now().isoformat()})
             self._save_users()
 
     def get_sorted_users(self):
-        """Return list of UserProfile sorted by last_login descending (most recent first)."""
         users = list(self.all_users.values())
         users.sort(key=lambda u: u.last_login or '', reverse=True)
         return users
 
-    # ============================================================
-    # USER MANAGEMENT
-    # ============================================================
-
     def login(self, username):
-        """Login with username - creates profile if not exists."""
         if username not in self.all_users:
             self.all_users[username] = UserProfile(username=username, name=username)
         self.all_users[username].last_login = datetime.now().isoformat()
         self._save_users()
         self.current_user = self.all_users[username]
         self.selected_page_index = 0
-
-        # Attempt to load RF model for this user
         self._load_rf_model(username)
 
     def logout(self):
-        """Logout current user."""
         self._save_users()
         self.current_user = None
         self.selected_page_index = 0
 
     def update_profile(self, name=None, age=None, notes=None):
-        """Update user profile fields."""
         if self.current_user is not None:
-            if name is not None:
-                self.current_user.name = name
-            if age is not None:
-                self.current_user.age = age
-            if notes is not None:
-                self.current_user.notes = notes
+            if name  is not None: self.current_user.name  = name
+            if age   is not None: self.current_user.age   = age
+            if notes is not None: self.current_user.notes = notes
             self._save_users()
-            # Force property change notification
             self.property('current_user').dispatch(self)
 
-    # ============================================================
-    # NAVIGATION
-    # ============================================================
-
     def set_selected_page(self, index):
-        """Set the currently selected page index."""
         self.selected_page_index = index
 
     def set_selected_port(self, port):
-        """Set the selected device port."""
         self.selected_port = port or ''
 
-    # ============================================================
-    # RF MODEL PERSISTENCE
-    # ============================================================
-
     def _get_rf_model_dir(self, username):
-        """Get the directory path for a user's RF model."""
-        data_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'neuromentor_data')
-        user_model_dir = os.path.join(data_dir, f'{username}_rf_model')
-        os.makedirs(user_model_dir, exist_ok=True)
-        return user_model_dir
+        d = os.path.join(self._get_data_dir(), 'neuromentor_data', f'{username}_rf_model')
+        os.makedirs(d, exist_ok=True)
+        return d
 
     def _get_bundled_model_dir(self):
-        """Get the path to the bundled pre-trained RF model."""
-        # The bundled model lives at: Kivy_Section/rf_model/rf_model/
-        project_root = os.path.dirname(os.path.abspath(__file__))
-        bundled = os.path.join(project_root, '..', 'rf_model', 'rf_model')
-        return os.path.normpath(bundled)
+        return os.path.normpath(
+            os.path.join(self._get_data_dir(), 'rf_model', 'rf_model'))
 
     def save_rf_model(self, rf_classifier=None):
-        """Save the RF model for the current user."""
         if rf_classifier is None:
             rf_classifier = getattr(self, 'rf_classifier', None)
         if self.current_user and rf_classifier and rf_classifier.is_trained:
-            dirpath = self._get_rf_model_dir(self.current_user.username)
-            rf_classifier.save(dirpath)
-            print(f"[AppState] RF model saved to {dirpath}")
+            self.rf_classifier.save(self._get_rf_model_dir(self.current_user.username))
 
     def _load_rf_model(self, username):
-        """Attempt to load an RF model for the given user.
-
-        Tries user-specific model first, then falls back to bundled model.
-        Returns True if loaded.
-        """
-
         if not hasattr(self, 'rf_classifier'):
             self.rf_classifier = RFClassifier()
-
-        # 1. Try user-specific model
-        user_dir = self._get_rf_model_dir(username)
-        model_file = os.path.join(user_dir, 'rf_eeg_model.pkl')
-        if os.path.exists(model_file):
-            try:
-                success = self.rf_classifier.load(user_dir)
-                if success:
-                    print(f"[AppState] User RF model loaded for {username}")
-                    return True
-            except Exception as e:
-                print(f"[AppState] Could not load user RF model: {e}")
-
-        # 2. Fall back to bundled pre-trained model
-        bundled_dir = self._get_bundled_model_dir()
-        bundled_model = os.path.join(bundled_dir, 'rf_eeg_model.pkl')
-        if os.path.exists(bundled_model):
-            try:
-                success = self.rf_classifier.load(bundled_dir)
-                if success:
-                    print(f"[AppState] Bundled RF model loaded for {username}")
-                    return True
-            except Exception as e:
-                print(f"[AppState] Could not load bundled RF model: {e}")
-
-        print(f"[AppState] No RF model available for {username}")
+        ud = self._get_rf_model_dir(username)
+        if os.path.exists(os.path.join(ud, 'rf_eeg_model.pkl')):
+            if self.rf_classifier.load(ud): return True
+        bd = self._get_bundled_model_dir()
+        if os.path.exists(os.path.join(bd, 'rf_eeg_model.pkl')):
+            if self.rf_classifier.load(bd): return True
         return False
 
 
 # ============================================================
-# File: widgets/custom_ui.py
+# Custom UI Widgets
 # ============================================================
-
-"""
-Custom UI Elements with shadows and gradients.
-"""
-from kivy.uix.behaviors import ButtonBehavior
-from kivy.uix.label import Label
-from kivy.graphics import Color, RoundedRectangle
-
 class ShadowButton(ButtonBehavior, Label):
-    """A button with a soft drop-shadow and rounded corners."""
-    
     def __init__(self, **kwargs):
         self.bg_color = kwargs.pop('bg_color', kwargs.pop('background_color', theme.BUTTON_BG))
         self.radius = kwargs.pop('radius', 12)
         super().__init__(**kwargs)
         self.bind(pos=self.update_canvas, size=self.update_canvas, state=self.update_canvas)
         self.update_canvas()
-        
+
     def update_canvas(self, *args):
         self.canvas.before.clear()
         with self.canvas.before:
-            # Soft shadow effect
-            shadow_steps = 4
-            base_offset = 1 if self.state == 'down' else 4
-            
-            for i in range(shadow_steps):
-                alpha = 0.25 * (1.0 - i/shadow_steps)
-                r_exp = self.radius + i
-                Color(0, 0, 0, alpha)
-                RoundedRectangle(
-                    pos=(self.x - i + 2, self.y - base_offset - i),
-                    size=(self.width + i*2, self.height + i*2),
-                    radius=[r_exp]
-                )
-            
-            # Main button background
+            base_off = 1 if self.state == 'down' else 4
+            for i in range(4):
+                Color(0, 0, 0, 0.25 * (1.0 - i / 4))
+                RoundedRectangle(pos=(self.x - i + 2, self.y - base_off - i),
+                                 size=(self.width + i * 2, self.height + i * 2),
+                                 radius=[self.radius + i])
             if self.state == 'down':
-                # Dim the color slightly
-                Color(self.bg_color[0]*0.8, self.bg_color[1]*0.8, self.bg_color[2]*0.8, 1)
+                Color(self.bg_color[0] * .8, self.bg_color[1] * .8, self.bg_color[2] * .8, 1)
             else:
                 Color(*self.bg_color)
-            
-            RoundedRectangle(
-                pos=self.pos,
-                size=self.size,
-                radius=[self.radius]
-            )
+            RoundedRectangle(pos=self.pos, size=self.size, radius=[self.radius])
 
-from kivy.uix.widget import Widget
-from kivy.graphics import Line
 
 class MenuBurgerButton(ButtonBehavior, Widget):
-    """A perfect hamburger menu icon that transitions to an X."""
     def __init__(self, **kwargs):
         self.color = kwargs.pop('color', theme.GOLD)
         self.is_open = False
@@ -1622,156 +792,94 @@ class MenuBurgerButton(ButtonBehavior, Widget):
             w = self.width * 0.5
             h = max(2, self.height * 0.08)
             cx, cy = self.center_x, self.center_y
-            
             if not self.is_open:
-                # Hamburger: 3 lines
-                spacing = self.height * 0.22
-                RoundedRectangle(pos=(cx - w/2, cy + spacing - h/2), size=(w, h), radius=[h/2])
-                RoundedRectangle(pos=(cx - w/2, cy - h/2), size=(w, h), radius=[h/2])
-                RoundedRectangle(pos=(cx - w/2, cy - spacing - h/2), size=(w, h), radius=[h/2])
+                sp2 = self.height * 0.22
+                RoundedRectangle(pos=(cx - w / 2, cy + sp2 - h / 2), size=(w, h), radius=[h / 2])
+                RoundedRectangle(pos=(cx - w / 2, cy - h / 2),        size=(w, h), radius=[h / 2])
+                RoundedRectangle(pos=(cx - w / 2, cy - sp2 - h / 2), size=(w, h), radius=[h / 2])
             else:
-                # X shape
-                Line(points=[cx - w/2, cy - w/2, cx + w/2, cy + w/2], width=h/2, cap='round')
-                Line(points=[cx - w/2, cy + w/2, cx + w/2, cy - w/2], width=h/2, cap='round')
+                Line(points=[cx - w / 2, cy - w / 2, cx + w / 2, cy + w / 2], width=h / 2, cap='round')
+                Line(points=[cx - w / 2, cy + w / 2, cx + w / 2, cy - w / 2], width=h / 2, cap='round')
 
-from kivy.uix.boxlayout import BoxLayout
-from kivy.graphics import Rectangle
-
-from kivy.graphics.texture import Texture
 
 class GradientCard(BoxLayout):
-    """A card with a soft gradient background, rounded corners, and a drop shadow."""
     def __init__(self, accent_color=None, **kwargs):
         kwargs.setdefault('orientation', 'vertical')
-        kwargs.setdefault('padding', [12, 12, 12, 12])
-        kwargs.setdefault('spacing', 6)
+        kwargs.setdefault('padding', [dp(12), dp(12), dp(12), dp(12)])
+        kwargs.setdefault('spacing', dp(6))
         self.accent_color = accent_color
         self.radius = kwargs.pop('radius', 12)
         super().__init__(**kwargs)
-        
-        # Create a basic 1x2 vertical gradient texture mapping top #202020 to bottom #0E0E0E
         self.texture = Texture.create(size=(1, 2), colorfmt='rgba')
         self.texture.mag_filter = 'linear'
         self.texture.min_filter = 'linear'
-        
-        # Bottom color, Top color (charcoal tones)
-        buf = bytes([
-            51, 46, 60, 255,   # bottom (darker charcoal #332e3c)
-            70, 65, 81, 255,   # top (lighter charcoal #464151)
-        ])
+        buf = bytes([51, 46, 60, 255, 70, 65, 81, 255])
         self.texture.blit_buffer(buf, colorfmt='rgba', bufferfmt='ubyte')
-        
         self.bind(pos=self.update_canvas, size=self.update_canvas)
         self.update_canvas()
 
     def update_canvas(self, *args):
         self.canvas.before.clear()
         with self.canvas.before:
-            # Soft dark drop shadow effect
-            shadow_steps = 4
-            for i in range(shadow_steps):
-                alpha = 0.2 * (1.0 - i/shadow_steps)
-                r_exp = self.radius + i
-                Color(0, 0, 0, alpha)
-                RoundedRectangle(
-                    pos=(self.x - i + 2, self.y - 2 - i),
-                    size=(self.width + i*2, self.height + i*2),
-                    radius=[r_exp]
-                )
-            
-            # Gradient rounded background
-            Color(1, 1, 1, 1)  # White to allow natural texture colors
-            RoundedRectangle(
-                pos=self.pos, size=self.size, radius=[self.radius], texture=self.texture
-            )
-
-            # Optional accent color indicator strip
+            for i in range(4):
+                Color(0, 0, 0, 0.2 * (1.0 - i / 4))
+                RoundedRectangle(pos=(self.x - i + 2, self.y - 2 - i),
+                                 size=(self.width + i * 2, self.height + i * 2),
+                                 radius=[self.radius + i])
+            Color(1, 1, 1, 1)
+            RoundedRectangle(pos=self.pos, size=self.size,
+                             radius=[self.radius], texture=self.texture)
             if self.accent_color:
                 Color(*self.accent_color)
-                RoundedRectangle(
-                    pos=(self.x + 8, self.y + self.height - 4), 
-                    size=(self.width - 16, 3), 
-                    radius=[1.5]
-                )
+                RoundedRectangle(pos=(self.x + 8, self.y + self.height - 4),
+                                 size=(self.width - 16, 3), radius=[1.5])
 
 
 # ============================================================
-# File: widgets/eeg_graph.py
+# EEG Graph widgets
 # ============================================================
-
-"""
-EEG Line Graph widget for live signal visualization.
-Uses Kivy Canvas for smooth real-time plotting (replaces fl_chart).
-"""
-from collections import deque
-from kivy.uix.widget import Widget
-from kivy.graphics import Color, Line, Rectangle
-from kivy.uix.boxlayout import BoxLayout
-from kivy.uix.label import Label
-from kivy.properties import NumericProperty
-
-
 class EegGraph(BoxLayout):
-    """
-    EEG Graph widget that shows a live line chart.
-    Data is added via add_data_point() and auto-scrolls.
-    """
     max_data_points = NumericProperty(256)
     min_y = NumericProperty(0)
     max_y = NumericProperty(4095)
 
     def __init__(self, **kwargs):
-        super().__init__(orientation='vertical', padding=[40, 10, 10, 10], **kwargs)
+        super().__init__(orientation='vertical',
+                         padding=[dp(16), dp(8), dp(8), dp(8)], **kwargs)
         self._data = deque(maxlen=256)
 
-        # Title label
         self._title_label = Label(
-            text='Live EEG Signal Check',
+            text='Live EEG Signal',
             font_size=theme.font(theme.FONT_BODY_SMALL),
             color=theme.TEXT_SECONDARY,
             size_hint_y=None,
-            height=20,
-            halign='left',
-            valign='middle',
-        )
-        self._title_label.bind(size=self._title_label.setter('text_size'))
+            halign='left', valign='middle')
+        self._title_label.bind(
+            size=self._title_label.setter('text_size'),
+            texture_size=lambda inst, sz: setattr(inst, 'height', max(sz[1], dp(18))))
         self.add_widget(self._title_label)
 
-        # Placeholder label (shown when no data)
         self._placeholder = Label(
             text='Waiting for signal...',
             font_size=theme.font(theme.FONT_BODY_REGULAR),
-            color=theme.TEXT_MUTED,
-        )
+            color=theme.TEXT_MUTED)
         self.add_widget(self._placeholder)
 
-        # Canvas widget for drawing the graph
         self._graph_canvas = _GraphCanvas(
-            data=self._data,
-            min_y=self.min_y,
-            max_y=self.max_y,
-        )
-        # Initially hidden; shown when data arrives
+            data=self._data, min_y=self.min_y, max_y=self.max_y)
         self._graph_canvas.opacity = 0
         self.add_widget(self._graph_canvas)
 
-        # Background
         with self.canvas.before:
             Color(*theme.PANEL_BG)
             self._bg_rect = Rectangle(pos=self.pos, size=self.size)
-            Color(*theme.BORDER_DARK)
-            self._border_rect = Rectangle(pos=self.pos, size=self.size)
-
         self.bind(pos=self._update_bg, size=self._update_bg)
 
     def _update_bg(self, *args):
-        self._bg_rect.pos = self.pos
+        self._bg_rect.pos  = self.pos
         self._bg_rect.size = self.size
-        self._border_rect.pos = self.pos
-        self._border_rect.size = self.size
 
     def add_data_point(self, value):
-        """Add a new data point to the graph."""
         self._data.append(value)
         if self._placeholder.opacity > 0:
             self._placeholder.opacity = 0
@@ -1779,7 +887,6 @@ class EegGraph(BoxLayout):
         self._graph_canvas.redraw()
 
     def clear(self):
-        """Clear all data points."""
         self._data.clear()
         self._placeholder.opacity = 1
         self._graph_canvas.opacity = 0
@@ -1787,11 +894,9 @@ class EegGraph(BoxLayout):
 
 
 class _GraphCanvas(Widget):
-    """Internal widget that draws the EEG line on its canvas."""
-
     def __init__(self, data, min_y=0, max_y=4095, **kwargs):
         super().__init__(**kwargs)
-        self._data = data
+        self._data  = data
         self._min_y = min_y
         self._max_y = max_y
         self.bind(size=lambda *a: self.redraw(), pos=lambda *a: self.redraw())
@@ -1800,13 +905,8 @@ class _GraphCanvas(Widget):
         self.canvas.clear()
         if not self._data or self.width <= 0 or self.height <= 0:
             return
-
-        x0 = self.x + 40
-        y0 = self.y + 10
-        w = self.width - 50
-        h = self.height - 20
-
-        # Draw grid lines
+        x0 = self.x + dp(16); y0 = self.y + dp(8)
+        w  = self.width - dp(20); h = self.height - dp(16)
         with self.canvas:
             Color(*theme.BORDER_DARK)
             for i in range(5):
@@ -1815,428 +915,238 @@ class _GraphCanvas(Widget):
             for i in range(9):
                 gx = x0 + (w * i / 8)
                 Line(points=[gx, y0, gx, y0 + h], width=1)
-
-        # Draw data line
         data_list = list(self._data)
         n = len(data_list)
-        if n < 2:
-            return
-
-        y_range = self._max_y - self._min_y
-        if y_range == 0:
-            y_range = 1
-
-        points = []
+        if n < 2: return
+        yr = self._max_y - self._min_y or 1
+        pts = []
         for i, val in enumerate(data_list):
-            px = x0 + (w * i / (n - 1))
-            py = y0 + h * ((val - self._min_y) / y_range)
+            px = x0 + w * i / (n - 1)
+            py = y0 + h * ((val - self._min_y) / yr)
             py = max(y0, min(y0 + h, py))
-            points.extend([px, py])
-
+            pts.extend([px, py])
         with self.canvas:
             Color(*theme.TEAL)
-            Line(points=points, width=1.5)
+            Line(points=pts, width=1.5)
 
 
 class BandPowerBars(BoxLayout):
-    """EEG Band Power horizontal bar display."""
-
     def __init__(self, **kwargs):
-        super().__init__(orientation='vertical', padding=10, spacing=4, **kwargs)
+        super().__init__(orientation='vertical', padding=dp(10), spacing=dp(4), **kwargs)
         self._bands = ['Delta', 'Theta', 'Alpha', 'Beta', 'Gamma']
-        self._bars = {}
-
-        # Title
-        title = Label(
-            text='EEG BAND POWERS',
-            font_size=theme.font(theme.FONT_BODY_SMALL),
-            color=theme.TEXT_SECONDARY,
-            size_hint_y=None,
-            height=20,
-            halign='left',
-            valign='middle',
-        )
-        title.bind(size=title.setter('text_size'))
+        self._bars  = {}
+        title = Label(text='EEG BAND POWERS',
+                      font_size=theme.font(theme.FONT_BODY_SMALL),
+                      color=theme.TEXT_SECONDARY, size_hint_y=None,
+                      halign='left', valign='middle')
+        title.bind(size=title.setter('text_size'),
+                   texture_size=lambda inst, sz: setattr(inst, 'height', max(sz[1], dp(18))))
         self.add_widget(title)
-
         for band in self._bands:
-            row = BoxLayout(size_hint_y=None, height=24, spacing=5)
-            lbl = Label(
-                text=band,
-                font_size=theme.font(theme.FONT_BODY_SMALL),
-                color=theme.TEXT_MUTED,
-                size_hint_x=None,
-                width=50,
-                halign='left',
-                valign='middle',
-            )
+            row = BoxLayout(size_hint_y=None, height=dp(24), spacing=dp(5))
+            lbl = Label(text=band, font_size=theme.font(theme.FONT_BODY_SMALL),
+                        color=theme.TEXT_MUTED, size_hint_x=None, width=dp(50),
+                        halign='left', valign='middle')
             lbl.bind(size=lbl.setter('text_size'))
             bar = _BarWidget(value=0)
-            row.add_widget(lbl)
-            row.add_widget(bar)
+            row.add_widget(lbl); row.add_widget(bar)
             self._bars[band] = bar
             self.add_widget(row)
-
-        # Background
         with self.canvas.before:
             Color(*theme.BG_DARK)
             self._bg = Rectangle(pos=self.pos, size=self.size)
-        self.bind(pos=self._update_bg, size=self._update_bg)
+        self.bind(pos=self._upd, size=self._upd)
 
-    def _update_bg(self, *args):
-        self._bg.pos = self.pos
+    def _upd(self, *a):
+        self._bg.pos  = self.pos
         self._bg.size = self.size
 
-    def update_values(self, values_dict):
-        """Update bar values. values_dict maps band name to 0-1 float."""
+    def update_values(self, vd):
         for band, bar in self._bars.items():
-            bar.value = values_dict.get(band, 0)
+            bar.value = vd.get(band, 0)
 
 
 class _BarWidget(Widget):
-    """A single horizontal progress bar."""
     value = NumericProperty(0)
 
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
-        self.bind(value=self._redraw, size=self._redraw, pos=self._redraw)
-        self._redraw()
+        self.bind(value=self._r, size=self._r, pos=self._r)
+        self._r()
 
-    def _redraw(self, *args):
+    def _r(self, *a):
         self.canvas.clear()
         with self.canvas:
-            # Track
             Color(0.165, 0.165, 0.165, 1)
             Rectangle(pos=self.pos, size=self.size)
-            # Fill
             Color(*theme.TEAL)
-            fill_w = self.width * max(0, min(1, self.value))
-            if fill_w > 0:
-                Rectangle(pos=self.pos, size=(fill_w, self.height))
+            fw = self.width * max(0, min(1, self.value))
+            if fw > 0:
+                Rectangle(pos=self.pos, size=(fw, self.height))
 
 
 # ============================================================
-# File: widgets/mind_visualizer.py
+# MindVisualizer
 # ============================================================
-
-"""
-MindVisualizer widget matching Flutter's MindVisualizer.
-Animated orb that moves based on focus level with jitter based on stress.
-Uses Kivy Canvas for drawing.
-"""
-import random
-from kivy.uix.widget import Widget
-from kivy.graphics import Color, Ellipse, Line, Rectangle
-from kivy.clock import Clock
-from kivy.properties import (
-    BooleanProperty, StringProperty, NumericProperty, ListProperty
-)
-
-
 class MindVisualizer(Widget):
-    """
-    Animated mind visualizer with a glowing orb.
-    Ball Y position responds to focus_ratio, jitter responds to stress_ratio.
-    """
-    is_active = BooleanProperty(False)
-    state_label = StringProperty('IDLE')
-    focus_ratio = NumericProperty(1.0)
+    is_active    = BooleanProperty(False)
+    state_label  = StringProperty('IDLE')
+    focus_ratio  = NumericProperty(1.0)
     stress_ratio = NumericProperty(1.0)
 
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
-        self._ball_y = 0.5
-        self._target_y = 0.5
-        self._jitter_x = 0
-        self._jitter_y = 0
+        self._ball_y = self._target_y = 0.5
+        self._jitter_x = self._jitter_y = 0.0
         self._jitter_intensity = 0.0
         self._ball_color = list(theme.TEAL)
+        self._clock_event = Clock.schedule_interval(self._animate, 1 / 60)
+        self.bind(focus_ratio=self._upd, stress_ratio=self._upd,
+                  state_label=self._upd,
+                  size=lambda *a: self._draw(),
+                  pos=lambda *a:  self._draw())
 
-        # Start animation loop at ~60fps
-        self._clock_event = Clock.schedule_interval(self._animate, 1.0 / 60.0)
-
-        self.bind(
-            focus_ratio=self._update_data,
-            stress_ratio=self._update_data,
-            state_label=self._update_data,
-            size=lambda *a: self._draw(),
-            pos=lambda *a: self._draw(),
-        )
-
-    def _update_data(self, *args):
-        """Recalculate target position and jitter from ratios."""
-        f_val = max(0.5, min(2.5, self.focus_ratio))
-        self._target_y = 1.0 - ((f_val - 0.5) / 2.0)
-
-        s_val = max(0.5, min(2.0, self.stress_ratio))
-        self._jitter_intensity = (s_val - 0.5) * 0.05
-
-        if self.state_label == 'Stressed':
-            self._ball_color = list(theme.RED)
-        elif self.state_label == 'Focused':
-            self._ball_color = list(theme.GOLD)
-        else:
-            self._ball_color = list(theme.TEAL)
+    def _upd(self, *a):
+        f = max(0.5, min(2.5, self.focus_ratio))
+        self._target_y = 1.0 - ((f - 0.5) / 2.0)
+        s = max(0.5, min(2.0, self.stress_ratio))
+        self._jitter_intensity = (s - 0.5) * 0.05
+        self._ball_color = (list(theme.RED)  if self.state_label == 'Stressed' else
+                            list(theme.GOLD) if self.state_label == 'Focused'  else
+                            list(theme.TEAL))
 
     def _animate(self, dt):
-        """Per-frame animation update."""
-        # Smooth interpolation
         self._ball_y += (self._target_y - self._ball_y) * 0.05
-        self._ball_y = max(0.1, min(0.9, self._ball_y))
-
-        # Apply jitter
+        self._ball_y  = max(0.1, min(0.9, self._ball_y))
         self._jitter_x = (random.random() - 0.5) * self._jitter_intensity
         self._jitter_y = (random.random() - 0.5) * self._jitter_intensity
-
         self._draw()
 
     def _draw(self):
-        """Redraw the visualizer."""
         self.canvas.clear()
-        w = self.width
-        h = self.height
-        x0 = self.x
-        y0 = self.y
-
-        if w <= 0 or h <= 0:
-            return
-
+        w, h, x0, y0 = self.width, self.height, self.x, self.y
+        if w <= 0 or h <= 0: return
         with self.canvas:
-            # Background
-            Color(0.02, 0.02, 0.031, 1)  # #050508
+            Color(0.02, 0.02, 0.031, 1)
             Rectangle(pos=self.pos, size=self.size)
-
-            # Grid
-            Color(0.118, 0.118, 0.157, 1)  # #1E1E28
+            Color(0.118, 0.118, 0.157, 1)
             for gx in range(0, int(w), 60):
                 Line(points=[x0 + gx, y0, x0 + gx, y0 + h], width=1)
             for gy in range(0, int(h), 60):
                 Line(points=[x0, y0 + gy, x0 + w, y0 + gy], width=1)
-
-            # Ball position
             cx = x0 + w * 0.5 + self._jitter_x * w
-            # Kivy Y is bottom-up, so invert
             cy = y0 + h * (1.0 - self._ball_y) + self._jitter_y * h
             cy = max(y0 + 50, min(y0 + h - 50, cy))
-            radius = 40
-
-            # Glow (concentric circles with decreasing alpha)
+            r  = 40
             for i in range(6, 0, -1):
-                alpha = 0.06 * i
                 Color(self._ball_color[0], self._ball_color[1],
-                      self._ball_color[2], alpha)
-                gr = radius * (0.5 + i * 0.5)
+                      self._ball_color[2], 0.06 * i)
+                gr = r * (0.5 + i * 0.5)
                 Ellipse(pos=(cx - gr, cy - gr), size=(gr * 2, gr * 2))
-
-            # Ball
             Color(*self._ball_color)
-            Ellipse(pos=(cx - radius, cy - radius),
-                    size=(radius * 2, radius * 2))
+            Ellipse(pos=(cx - r, cy - r), size=(r * 2, r * 2))
 
-        # Status label is drawn separately so it's always on top
-        self.canvas.after.clear()
-        with self.canvas.after:
-            pass  # Text is handled via an overlay Label if needed
-
-    def on_parent(self, *args):
-        """Ensure we have a status label overlay."""
-        pass
-
-    def __del__(self):
+    def cleanup(self):
         if hasattr(self, '_clock_event') and self._clock_event:
             self._clock_event.cancel()
+            self._clock_event = None
+
+    def __del__(self):
+        self.cleanup()
 
 
 # ============================================================
-# File: widgets/tasks/breathing_widget.py
+# BreathingWidget
 # ============================================================
-
-"""
-Breathing task widget matching Flutter's BreathingWidget.
-Supports 4-7-8 (Calm) and Box (Focus) breathing modes.
-"""
-from kivy.uix.boxlayout import BoxLayout
-from kivy.uix.label import Label
-from kivy.uix.button import Button
-from kivy.uix.togglebutton import ToggleButton
-from kivy.clock import Clock
-from kivy.graphics import Color, Rectangle, RoundedRectangle
-
-
 class BreathingWidget(BoxLayout):
-    """Breathing exercise task with modes and score tracking."""
-
     def __init__(self, **kwargs):
-        super().__init__(orientation='vertical', padding=20, spacing=10, **kwargs)
-        self._step = 0
-        self._score = 0
+        super().__init__(orientation='vertical', padding=dp(20), spacing=dp(10), **kwargs)
+        self._step = self._score = 0
         self._is_running = False
         self._mode = '4-7-8'
         self._clock_event = None
 
-        # Instruction label
         self._instruction_lbl = Label(
-            text='Ready',
-            font_size=sp(40),
-            color=theme.TEAL,
-            bold=True,
-            size_hint_y=0.4,
-        )
+            text='Ready', font_size=sp(40), color=theme.TEAL,
+            bold=True, size_hint_y=0.4)
         self.add_widget(self._instruction_lbl)
 
-        # Mode selector row
-        mode_row = BoxLayout(
-            size_hint_y=None, height=40,
-            spacing=20, padding=[0, 0, 0, 0]
-        )
-        mode_row.size_hint_x = None
-        mode_row.width = 320
+        mode_row = BoxLayout(size_hint_y=None, height=dp(44), spacing=dp(20))
+        mode_row.size_hint_x = None; mode_row.width = dp(320)
         mode_row.pos_hint = {'center_x': 0.5}
-
-        self._btn_478 = ToggleButton(
-            text='4-7-8 (Calm)',
-            group='breathing_mode',
-            state='down',
-            font_size=theme.font(theme.FONT_BODY_REGULAR),
-            background_color=theme.GOLD,
-            color=theme.BG_DARK,
-        )
+        self._btn_478 = ToggleButton(text='4-7-8 (Calm)', group='bm',
+            state='down', font_size=theme.font(theme.FONT_BODY_REGULAR),
+            background_color=theme.GOLD, color=theme.BG_DARK)
         self._btn_478.bind(on_press=lambda *a: self.set_mode('4-7-8'))
-
-        self._btn_box = ToggleButton(
-            text='Box (Focus)',
-            group='breathing_mode',
-            state='normal',
-            font_size=theme.font(theme.FONT_BODY_REGULAR),
-            background_color=theme.BORDER_DARK,
-            color=theme.TEXT_PRIMARY,
-        )
+        self._btn_box = ToggleButton(text='Box (Focus)', group='bm',
+            state='normal', font_size=theme.font(theme.FONT_BODY_REGULAR),
+            background_color=theme.BORDER_DARK, color=theme.TEXT_PRIMARY)
         self._btn_box.bind(on_press=lambda *a: self.set_mode('box'))
-
-        mode_row.add_widget(self._btn_478)
-        mode_row.add_widget(self._btn_box)
+        mode_row.add_widget(self._btn_478); mode_row.add_widget(self._btn_box)
         self.add_widget(mode_row)
 
-        # Score label
-        self._score_lbl = Label(
-            text='Score: 0',
+        self._score_lbl = Label(text='Score: 0',
             font_size=theme.font(theme.FONT_HEADING_MEDIUM),
-            color=theme.GOLD,
-            size_hint_y=None,
-            height=40,
-        )
+            color=theme.GOLD, size_hint_y=None, height=dp(40))
         self.add_widget(self._score_lbl)
 
-        # Start/Stop button
-        self._start_btn = ShadowButton(
-            text='START',
-            font_size=theme.font(theme.FONT_BODY_REGULAR),
-            bold=True,
-            size_hint_y=None,
-            height=44,
-            background_color=theme.BUTTON_BG,
-            color=theme.GOLD,
-        )
+        self._start_btn = ShadowButton(text='START',
+            font_size=theme.font(theme.FONT_BODY_REGULAR), bold=True,
+            size_hint_y=None, height=dp(44),
+            background_color=theme.BUTTON_BG, color=theme.GOLD)
         self._start_btn.bind(on_press=self._toggle)
         self.add_widget(self._start_btn)
 
     def set_mode(self, mode):
         self._mode = mode
         if mode == '4-7-8':
-            self._btn_478.state = 'down'
-            self._btn_box.state = 'normal'
-            self._btn_478.background_color = theme.GOLD
-            self._btn_478.color = theme.BG_DARK
-            self._btn_box.background_color = theme.BORDER_DARK
-            self._btn_box.color = theme.TEXT_PRIMARY
-        elif mode == 'box':
-            self._btn_box.state = 'down'
-            self._btn_478.state = 'normal'
-            self._btn_box.background_color = theme.GOLD
-            self._btn_box.color = theme.BG_DARK
-            self._btn_478.background_color = theme.BORDER_DARK
-            self._btn_478.color = theme.TEXT_PRIMARY
-            
-    def start_task(self):
-        self._start()
-
-    def _toggle(self, *args):
-        if self._is_running:
-            self.stop()
+            self._btn_478.state = 'down'; self._btn_box.state = 'normal'
+            self._btn_478.background_color = theme.GOLD; self._btn_478.color = theme.BG_DARK
+            self._btn_box.background_color = theme.BORDER_DARK; self._btn_box.color = theme.TEXT_PRIMARY
         else:
-            self._start()
+            self._btn_box.state = 'down'; self._btn_478.state = 'normal'
+            self._btn_box.background_color = theme.GOLD; self._btn_box.color = theme.BG_DARK
+            self._btn_478.background_color = theme.BORDER_DARK; self._btn_478.color = theme.TEXT_PRIMARY
+
+    def start_task(self): self._start()
+
+    def _toggle(self, *a):
+        self.stop() if self._is_running else self._start()
 
     def _start(self):
-        if self._is_running:
-            return
-        self._is_running = True
-        self._step = 0
-        self._score = 0
-        self._start_btn.text = 'STOP'
-        self._start_btn.color = theme.RED
+        if self._is_running: return
+        self._is_running = True; self._step = self._score = 0
+        self._start_btn.text = 'STOP'; self._start_btn.color = theme.RED
         self._start_btn.bg_color = theme.DANGER_BUTTON_BG
         self._clock_event = Clock.schedule_interval(self._tick, 1.0)
 
     def stop(self):
-        if self._clock_event:
-            self._clock_event.cancel()
-            self._clock_event = None
-        self._is_running = False
-        self._instruction_lbl.text = 'Relax'
-        self._start_btn.text = 'START'
-        self._start_btn.color = theme.GOLD
+        if self._clock_event: self._clock_event.cancel(); self._clock_event = None
+        self._is_running = False; self._instruction_lbl.text = 'Relax'
+        self._start_btn.text = 'START'; self._start_btn.color = theme.GOLD
         self._start_btn.bg_color = theme.BUTTON_BG
 
     def _tick(self, dt):
-        self._step += 1
-        self._score = self._step * 10
+        self._step += 1; self._score = self._step * 10
         self._score_lbl.text = f'Score: {self._score}'
-
-        cycle_length = 16 if self._mode == 'box' else 19
-        curr = self._step % cycle_length
-
+        cl = 16 if self._mode == 'box' else 19; cur = self._step % cl
         if self._mode == 'box':
-            if curr < 4:
-                self._instruction_lbl.text = f'INHALE ({4 - curr})'
-            elif curr < 8:
-                self._instruction_lbl.text = f'HOLD ({8 - curr})'
-            elif curr < 12:
-                self._instruction_lbl.text = f'EXHALE ({12 - curr})'
-            else:
-                self._instruction_lbl.text = f'HOLD ({16 - curr})'
+            if   cur < 4:  self._instruction_lbl.text = f'INHALE ({4 - cur})'
+            elif cur < 8:  self._instruction_lbl.text = f'HOLD ({8 - cur})'
+            elif cur < 12: self._instruction_lbl.text = f'EXHALE ({12 - cur})'
+            else:          self._instruction_lbl.text = f'HOLD ({16 - cur})'
         else:
-            if curr < 4:
-                self._instruction_lbl.text = f'INHALE ({4 - curr})'
-            elif curr < 11:
-                self._instruction_lbl.text = f'HOLD ({11 - curr})'
-            else:
-                self._instruction_lbl.text = f'EXHALE ({19 - curr})'
+            if   cur < 4:  self._instruction_lbl.text = f'INHALE ({4 - cur})'
+            elif cur < 11: self._instruction_lbl.text = f'HOLD ({11 - cur})'
+            else:          self._instruction_lbl.text = f'EXHALE ({19 - cur})'
 
     def cleanup(self):
-        """Call when removing widget to stop timers."""
-        if self._clock_event:
-            self._clock_event.cancel()
+        if self._clock_event: self._clock_event.cancel()
 
 
 # ============================================================
-# File: widgets/tasks/focus_widget.py
+# FocusWidget
 # ============================================================
-
-"""
-Focus task widget matching Flutter's FocusWidget.
-Supports Visual Tracking and Tech Reading modes.
-"""
-import random
-from kivy.uix.boxlayout import BoxLayout
-from kivy.uix.floatlayout import FloatLayout
-from kivy.uix.scrollview import ScrollView
-from kivy.uix.label import Label
-from kivy.uix.togglebutton import ToggleButton
-from kivy.uix.widget import Widget
-from kivy.graphics import Color, Ellipse, Rectangle
-from kivy.clock import Clock
-
-
 ARTICLES = [
     'Neuroplasticity is the ability of neural networks in the brain to reorganize '
     'themselves by creating new neural connections throughout life. This allows '
@@ -2245,2605 +1155,1833 @@ ARTICLES = [
     'is not limited to childhood development but continues throughout adult life. '
     'This groundbreaking finding has revolutionized our understanding of brain '
     'function and has led to new therapeutic approaches for treating brain injuries, '
-    'learning disabilities, and neurodegenerative diseases. The brain\'s remarkable '
-    'ability to adapt and change forms the biological basis for learning new skills '
-    'and forming new memories.',
+    'learning disabilities, and neurodegenerative diseases.',
 
     'Quantum entanglement is a phenomenon where two or more particles become '
     'interconnected in such a way that the quantum state of each particle cannot '
     'be described independently. When particles are entangled, they remain connected '
     'across vast distances, and measuring one particle instantaneously affects the '
-    'state of the other. This counterintuitive phenomenon puzzled even Einstein, '
-    'who called it \'spooky action at a distance.\' Today, quantum entanglement is '
-    'recognized as a fundamental aspect of quantum mechanics and has practical '
-    'applications in quantum computing, quantum cryptography, and quantum '
-    'teleportation. Scientists continue to explore the implications of entanglement '
-    'for our understanding of reality.',
+    'state of the other. Today, quantum entanglement has practical applications in '
+    'quantum computing, quantum cryptography, and quantum teleportation.',
 
     'In cognitive science, attention is the cognitive process that allows us to '
     'focus on specific information while filtering out irrelevant stimuli. The '
     'human brain receives countless sensory inputs every second, yet we can only '
     'consciously process a fraction of this information. Selective attention '
     'mechanisms help us prioritize important information and maintain focus on '
-    'relevant tasks. Research has shown that attention is not a single unified '
-    'process but involves multiple neural systems and brain regions. Understanding '
-    'attention mechanisms has profound implications for education, workplace '
-    'productivity, mental health treatment, and the design of technology interfaces.',
+    'relevant tasks.',
 ]
 
 
 class FocusWidget(BoxLayout):
-    """Focus task with Visual Tracking and Tech Reading modes."""
-
     def __init__(self, **kwargs):
-        super().__init__(orientation='vertical', padding=10, spacing=10, **kwargs)
-        self._is_tracking = True
-        self._is_running = False
+        super().__init__(orientation='vertical', padding=dp(10), spacing=dp(10), **kwargs)
+        self._is_tracking = True; self._is_running = False
 
-        # Mode selector row
-        mode_row = BoxLayout(
-            size_hint_y=None, height=40,
-            spacing=20,
-        )
-        mode_row.size_hint_x = None
-        mode_row.width = 320
+        mode_row = BoxLayout(size_hint_y=None, height=dp(44), spacing=dp(20))
+        mode_row.size_hint_x = None; mode_row.width = dp(320)
         mode_row.pos_hint = {'center_x': 0.5}
-
-        self._btn_tracking = ToggleButton(
-            text='Visual Tracking',
-            group='focus_mode',
-            state='down',
-            font_size=theme.font(theme.FONT_BODY_REGULAR),
-            background_color=theme.GOLD,
-            color=theme.BG_DARK,
-        )
+        self._btn_tracking = ToggleButton(text='Visual Tracking', group='fm',
+            state='down', font_size=theme.font(theme.FONT_BODY_REGULAR),
+            background_color=theme.GOLD, color=theme.BG_DARK)
         self._btn_tracking.bind(on_press=lambda *a: self.set_mode('tracking'))
-
-        self._btn_reading = ToggleButton(
-            text='Tech Reading',
-            group='focus_mode',
-            state='normal',
-            font_size=theme.font(theme.FONT_BODY_REGULAR),
-            background_color=theme.BORDER_DARK,
-            color=theme.TEXT_PRIMARY,
-        )
+        self._btn_reading = ToggleButton(text='Tech Reading', group='fm',
+            state='normal', font_size=theme.font(theme.FONT_BODY_REGULAR),
+            background_color=theme.BORDER_DARK, color=theme.TEXT_PRIMARY)
         self._btn_reading.bind(on_press=lambda *a: self.set_mode('reading'))
-
-        mode_row.add_widget(self._btn_tracking)
-        mode_row.add_widget(self._btn_reading)
+        mode_row.add_widget(self._btn_tracking); mode_row.add_widget(self._btn_reading)
         self.add_widget(mode_row)
 
-        # Content area
         self._tracking_view = TrackingView()
-        self._reading_view = ReadingView()
-        self._reading_view.opacity = 0
-        self._reading_view.disabled = True
-
+        self._reading_view  = ReadingView()
+        self._reading_view.opacity = 0; self._reading_view.disabled = True
         self._content = FloatLayout()
         self._content.add_widget(self._tracking_view)
         self._content.add_widget(self._reading_view)
         self.add_widget(self._content)
 
-        # Start/Stop button
-        self._start_btn = ShadowButton(
-            text='START',
-            font_size=theme.font(theme.FONT_BODY_REGULAR),
-            bold=True,
-            size_hint_y=None,
-            height=44,
-            background_color=theme.BUTTON_BG,
-            color=theme.GOLD,
-        )
+        self._start_btn = ShadowButton(text='START',
+            font_size=theme.font(theme.FONT_BODY_REGULAR), bold=True,
+            size_hint_y=None, height=dp(44),
+            background_color=theme.BUTTON_BG, color=theme.GOLD)
         self._start_btn.bind(on_press=self._toggle)
         self.add_widget(self._start_btn)
 
     def set_mode(self, mode):
-        is_tracking = (mode == 'tracking')
-        self._is_tracking = is_tracking
-        if is_tracking:
-            self._btn_tracking.state = 'down'
-            self._btn_reading.state = 'normal'
-            self._btn_tracking.background_color = theme.GOLD
-            self._btn_tracking.color = theme.BG_DARK
-            self._btn_reading.background_color = theme.BORDER_DARK
-            self._btn_reading.color = theme.TEXT_PRIMARY
-
-            self._tracking_view.opacity = 1
-            self._tracking_view.disabled = False
-            self._reading_view.opacity = 0
-            self._reading_view.disabled = True
-        else:
-            self._btn_reading.state = 'down'
-            self._btn_tracking.state = 'normal'
-            self._btn_reading.background_color = theme.GOLD
-            self._btn_reading.color = theme.BG_DARK
-            self._btn_tracking.background_color = theme.BORDER_DARK
-            self._btn_tracking.color = theme.TEXT_PRIMARY
-
-            self._tracking_view.opacity = 0
-            self._tracking_view.disabled = True
-            self._reading_view.opacity = 1
-            self._reading_view.disabled = False
+        it = (mode == 'tracking'); self._is_tracking = it
+        self._btn_tracking.state = 'down' if it else 'normal'
+        self._btn_reading.state  = 'normal' if it else 'down'
+        self._btn_tracking.background_color = theme.GOLD if it else theme.BORDER_DARK
+        self._btn_tracking.color = theme.BG_DARK if it else theme.TEXT_PRIMARY
+        self._btn_reading.background_color  = theme.BORDER_DARK if it else theme.GOLD
+        self._btn_reading.color  = theme.TEXT_PRIMARY if it else theme.BG_DARK
+        self._tracking_view.opacity = 1 if it else 0; self._tracking_view.disabled = not it
+        self._reading_view.opacity  = 0 if it else 1; self._reading_view.disabled  = it
 
     def start_task(self):
-        if not self._is_running:
-            self._toggle()
+        if not self._is_running: self._toggle()
 
     def stop(self):
-        if self._is_running:
-            self._toggle()
+        if self._is_running: self._toggle()
 
-    def _toggle(self, *args):
+    def _toggle(self, *a):
         self._is_running = not self._is_running
         if self._is_running:
-            self._start_btn.text = 'STOP'
-            self._start_btn.color = theme.RED
+            self._start_btn.text = 'STOP'; self._start_btn.color = theme.RED
             self._start_btn.bg_color = theme.DANGER_BUTTON_BG
-            self._tracking_view.start()
-            self._reading_view.new_article()
+            self._tracking_view.start(); self._reading_view.new_article()
         else:
-            self._start_btn.text = 'START'
-            self._start_btn.color = theme.GOLD
+            self._start_btn.text = 'START'; self._start_btn.color = theme.GOLD
             self._start_btn.bg_color = theme.BUTTON_BG
             self._tracking_view.stop()
 
-    def cleanup(self):
-        self._tracking_view.stop()
+    def cleanup(self): self._tracking_view.stop()
 
 
 class TrackingView(Widget):
-    """Moving orb for visual tracking exercise."""
-
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
-        self._ball_x = 0.5
-        self._ball_y = 0.5
-        self._clock_event = None
-        self.bind(size=self._draw, pos=self._draw)
-        self._draw()
+        self._ball_x = self._ball_y = 0.5; self._clock_event = None
+        self.bind(size=self._draw, pos=self._draw); self._draw()
 
     def start(self):
-        if self._clock_event:
-            self._clock_event.cancel()
-        self._clock_event = Clock.schedule_interval(self._move_ball, 1.0 / 30.0)
+        if self._clock_event: self._clock_event.cancel()
+        self._clock_event = Clock.schedule_interval(self._move, 1 / 30)
 
     def stop(self):
-        if self._clock_event:
-            self._clock_event.cancel()
-            self._clock_event = None
+        if self._clock_event: self._clock_event.cancel(); self._clock_event = None
 
-    def _move_ball(self, dt):
-        self._ball_x += (random.random() - 0.5) * 0.02
-        self._ball_y += (random.random() - 0.5) * 0.02
-        self._ball_x = max(0.05, min(0.95, self._ball_x))
-        self._ball_y = max(0.05, min(0.95, self._ball_y))
+    def _move(self, dt):
+        self._ball_x = max(0.05, min(0.95, self._ball_x + (random.random() - 0.5) * 0.02))
+        self._ball_y = max(0.05, min(0.95, self._ball_y + (random.random() - 0.5) * 0.02))
         self._draw()
 
-    def _draw(self, *args):
+    def _draw(self, *a):
         self.canvas.clear()
-        w = self.width
-        h = self.height
-        if w <= 0 or h <= 0:
-            return
-
+        w, h = self.width, self.height
+        if w <= 0 or h <= 0: return
+        cx = self.x + self._ball_x * w; cy = self.y + self._ball_y * h
         with self.canvas:
-            # Background
-            Color(0, 0, 0, 1)
-            Rectangle(pos=self.pos, size=self.size)
-
-            # Orb glow
-            cx = self.x + self._ball_x * w
-            cy = self.y + self._ball_y * h
+            Color(0, 0, 0, 1); Rectangle(pos=self.pos, size=self.size)
             for i in range(4, 0, -1):
-                alpha = 0.12 * i
-                Color(theme.GOLD[0], theme.GOLD[1], theme.GOLD[2], alpha)
-                r = 15 + i * 8
-                Ellipse(pos=(cx - r, cy - r), size=(r * 2, r * 2))
-
-            # Orb
-            Color(*theme.GOLD)
-            Ellipse(pos=(cx - 15, cy - 15), size=(30, 30))
+                Color(theme.GOLD[0], theme.GOLD[1], theme.GOLD[2], 0.12 * i)
+                r = 15 + i * 8; Ellipse(pos=(cx - r, cy - r), size=(r * 2, r * 2))
+            Color(*theme.GOLD); Ellipse(pos=(cx - 15, cy - 15), size=(30, 30))
 
 
 class ReadingView(BoxLayout):
-    """Tech article reading exercise."""
-
     def __init__(self, **kwargs):
-        super().__init__(orientation='vertical', padding=15, spacing=10, **kwargs)
-
-        self._header = Label(
-            text='READ CAREFULLY:',
-            font_size=theme.font(theme.FONT_BODY_SMALL),
-            color=theme.TEXT_SECONDARY,
-            size_hint_y=None,
-            height=20,
-            halign='left',
-            valign='middle',
-        )
-        self._header.bind(size=self._header.setter('text_size'))
-        self.add_widget(self._header)
-
+        super().__init__(orientation='vertical', padding=dp(15), spacing=dp(10), **kwargs)
+        hdr = Label(text='READ CAREFULLY:',
+            font_size=theme.font(theme.FONT_BODY_SMALL), color=theme.TEXT_SECONDARY,
+            size_hint_y=None, halign='left', valign='middle')
+        hdr.bind(size=hdr.setter('text_size'),
+                 texture_size=lambda inst, sz: setattr(inst, 'height', max(sz[1], dp(20))))
+        self.add_widget(hdr)
         scroll = ScrollView()
-        self._article_lbl = Label(
-            text=random.choice(ARTICLES),
+        self._art = Label(text=random.choice(ARTICLES),
             font_size=theme.font(theme.FONT_BODY_LARGE),
-            color=theme.TEAL,
-            markup=False,
-            halign='left',
-            valign='top',
-            size_hint_y=None,
-        )
-        self._article_lbl.bind(
-            texture_size=lambda inst, sz: setattr(inst, 'height', sz[1]),
-            width=lambda inst, w: setattr(inst, 'text_size', (w, None)),
-        )
-        scroll.add_widget(self._article_lbl)
-        self.add_widget(scroll)
-
-        # Background
+            color=theme.TEAL, markup=False, halign='left', valign='top',
+            size_hint_y=None)
+        self._art.bind(texture_size=lambda inst, sz: setattr(inst, 'height', sz[1]),
+                       width=lambda inst, w: setattr(inst, 'text_size', (w, None)))
+        scroll.add_widget(self._art); self.add_widget(scroll)
         with self.canvas.before:
             Color(0.067, 0.067, 0.067, 1)
             self._bg = Rectangle(pos=self.pos, size=self.size)
-        self.bind(pos=self._update_bg, size=self._update_bg)
+        self.bind(pos=self._u, size=self._u)
 
-    def _update_bg(self, *args):
-        self._bg.pos = self.pos
-        self._bg.size = self.size
-
-    def new_article(self):
-        self._article_lbl.text = random.choice(ARTICLES)
+    def _u(self, *a): self._bg.pos = self.pos; self._bg.size = self.size
+    def new_article(self): self._art.text = random.choice(ARTICLES)
 
 
 # ============================================================
-# File: widgets/tasks/stroop_widget.py
+# StroopWidget
 # ============================================================
-
-"""
-Stroop/Math task widget matching Flutter's StroopWidget.
-Supports Stroop color test and Rapid Math modes.
-"""
-import random
-from kivy.uix.boxlayout import BoxLayout
-from kivy.uix.label import Label
-from kivy.uix.button import Button
-from kivy.uix.textinput import TextInput
-from kivy.uix.togglebutton import ToggleButton
-from kivy.clock import Clock
-
-
 class StroopWidget(BoxLayout):
-    """Stroop color + rapid math stress task."""
-
     def __init__(self, **kwargs):
-        super().__init__(orientation='vertical', padding=20, spacing=10, **kwargs)
-        self._score = 0
-        self._is_running = False
-        self._is_math_mode = False
+        super().__init__(orientation='vertical', padding=dp(20), spacing=dp(10), **kwargs)
+        self._score = 0; self._is_running = False; self._is_math_mode = False
         self._clock_event = None
-
-        # Stroop state
-        self._display_word = 'BLUE'
-        self._ink_color = (0, 0, 1, 1)
-        self._current_ink_name = 'BLUE'
-
-        # Math state
-        self._math_answer = 0
-        self._math_problem = ''
-
+        self._current_ink_name = 'BLUE'; self._math_answer = 0
         self._colors = ['RED', 'BLUE', 'GREEN', 'YELLOW']
-        self._color_map = {
-            'RED': (1, 0, 0, 1),
-            'BLUE': (0, 0, 1, 1),
-            'GREEN': (0, 1, 0, 1),
-            'YELLOW': (1, 1, 0, 1),
-        }
+        self._color_map = {'RED': (1, 0, 0, 1), 'BLUE': (0, 0, 1, 1),
+                           'GREEN': (0, 1, 0, 1), 'YELLOW': (1, 1, 0, 1)}
 
-        # Display label (word or math problem)
-        self._display_lbl = Label(
-            text='BLUE',
-            font_size=sp(60),
-            bold=True,
-            color=(0, 0, 1, 1),
-            size_hint_y=0.35,
-        )
+        self._display_lbl = Label(text='BLUE', font_size=sp(50), bold=True,
+            color=(0, 0, 1, 1), size_hint_y=0.35)
         self.add_widget(self._display_lbl)
 
-        # Mode selector row
-        mode_row = BoxLayout(
-            size_hint_y=None, height=40,
-            spacing=20
-        )
-        mode_row.size_hint_x = None
-        mode_row.width = 280
+        mode_row = BoxLayout(size_hint_y=None, height=dp(44), spacing=dp(20))
+        mode_row.size_hint_x = None; mode_row.width = dp(280)
         mode_row.pos_hint = {'center_x': 0.5}
-
-        self._btn_stroop = ToggleButton(
-            text='Stroop',
-            group='stroop_mode',
-            state='down',
+        self._btn_stroop = ToggleButton(text='Stroop', group='sm', state='down',
             font_size=theme.font(theme.FONT_BODY_REGULAR),
-            background_color=theme.GOLD,
-            color=theme.BG_DARK,
-        )
+            background_color=theme.GOLD, color=theme.BG_DARK)
         self._btn_stroop.bind(on_press=lambda *a: self.set_mode('stroop'))
-
-        self._btn_math = ToggleButton(
-            text='Rapid Math',
-            group='stroop_mode',
-            state='normal',
+        self._btn_math = ToggleButton(text='Rapid Math', group='sm', state='normal',
             font_size=theme.font(theme.FONT_BODY_REGULAR),
-            background_color=theme.BORDER_DARK,
-            color=theme.TEXT_PRIMARY,
-        )
+            background_color=theme.BORDER_DARK, color=theme.TEXT_PRIMARY)
         self._btn_math.bind(on_press=lambda *a: self.set_mode('math'))
-
-        mode_row.add_widget(self._btn_stroop)
-        mode_row.add_widget(self._btn_math)
+        mode_row.add_widget(self._btn_stroop); mode_row.add_widget(self._btn_math)
         self.add_widget(mode_row)
 
-        # Answer area: color buttons for Stroop, text input for Math
-        self._stroop_row = BoxLayout(
-            size_hint_y=None, height=50,
-            spacing=8,
-            pos_hint={'center_x': 0.5},
-        )
+        self._stroop_row = BoxLayout(size_hint_y=None, height=dp(50), spacing=dp(8))
         for c in self._colors:
-            btn = Button(
-                text=c,
-                font_size=sp(12),
-                bold=True,
-                background_color=self._color_map[c],
-                color=(0, 0, 0, 1),
-                size_hint_x=None,
-                width=80,
-            )
+            btn = Button(text=c, font_size=sp(12), bold=True,
+                         background_color=self._color_map[c], color=(0, 0, 0, 1),
+                         size_hint_x=None, width=dp(80))
             btn.bind(on_press=lambda inst, cn=c: self._check_stroop(cn))
             self._stroop_row.add_widget(btn)
         self.add_widget(self._stroop_row)
 
-        # Math input (hidden by default)
-        self._math_row = BoxLayout(
-            size_hint=(None, None), size=(300, 45),
-            pos_hint={'center_x': 0.5},
-            spacing=10
-        )
-        
-        self._math_input = TextInput(
-            hint_text='Answer',
+        self._math_row = BoxLayout(size_hint=(None, None), size=(dp(300), dp(45)),
+                                   pos_hint={'center_x': 0.5}, spacing=dp(10))
+        self._math_input = TextInput(hint_text='Answer',
             font_size=theme.font(theme.FONT_HEADING_MEDIUM),
-            multiline=False,
-            input_filter='int',
-            size_hint=(None, 1),
-            width=180,
-            background_color=theme.INPUT_BG,
-            foreground_color=theme.TEXT_PRIMARY,
-        )
+            multiline=False, input_filter='int',
+            size_hint=(None, 1), width=dp(180),
+            background_color=theme.INPUT_BG, foreground_color=theme.TEXT_PRIMARY)
         self._math_input.bind(on_text_validate=lambda *a: self._check_math())
-        
-        self._math_submit = ShadowButton(
-            text='SUBMIT',
-            font_size=theme.font(theme.FONT_BODY_REGULAR),
-            bold=True,
-            bg_color=theme.TEAL,
-            color=theme.BG_DARK,
-            size_hint=(None, 1),
-            width=110,
-        )
+        self._math_submit = ShadowButton(text='SUBMIT',
+            font_size=theme.font(theme.FONT_BODY_REGULAR), bold=True,
+            bg_color=theme.TEAL, color=theme.BG_DARK,
+            size_hint=(None, 1), width=dp(110))
         self._math_submit.bind(on_press=lambda *a: self._check_math())
-        
         self._math_row.add_widget(self._math_input)
         self._math_row.add_widget(self._math_submit)
-        
-        self._math_row.opacity = 0
-        self._math_row.disabled = True
+        self._math_row.opacity = 0; self._math_row.disabled = True
         self.add_widget(self._math_row)
 
-        # Score label
-        self._score_lbl = Label(
-            text='Score: 0',
+        self._score_lbl = Label(text='Score: 0',
             font_size=theme.font(theme.FONT_HEADING_MEDIUM),
-            color=theme.GOLD,
-            size_hint_y=None,
-            height=40,
-        )
+            color=theme.GOLD, size_hint_y=None, height=dp(40))
         self.add_widget(self._score_lbl)
 
-        # Start/Stop button
-        self._start_btn = ShadowButton(
-            text='START',
-            font_size=theme.font(theme.FONT_BODY_REGULAR),
-            bold=True,
-            size_hint=(None, None),
-            size=(200, 45),
-            pos_hint={'center_x': 0.5},
-            bg_color=theme.BUTTON_BG,
-            color=theme.GOLD,
-        )
+        self._start_btn = ShadowButton(text='START',
+            font_size=theme.font(theme.FONT_BODY_REGULAR), bold=True,
+            size_hint_y=None, height=dp(44),
+            background_color=theme.BUTTON_BG, color=theme.GOLD)
         self._start_btn.bind(on_press=self._toggle)
         self.add_widget(self._start_btn)
 
     def set_mode(self, mode):
-        is_math = (mode == 'math')
-        self._is_math_mode = is_math
-        if is_math:
-            self._btn_math.state = 'down'
-            self._btn_stroop.state = 'normal'
-            self._btn_math.background_color = theme.GOLD
-            self._btn_math.color = theme.BG_DARK
-            self._btn_stroop.background_color = theme.BORDER_DARK
-            self._btn_stroop.color = theme.TEXT_PRIMARY
+        im = (mode == 'math'); self._is_math_mode = im
+        self._btn_math.state   = 'down' if im else 'normal'
+        self._btn_stroop.state = 'normal' if im else 'down'
+        self._btn_math.background_color   = theme.GOLD if im else theme.BORDER_DARK
+        self._btn_math.color              = theme.BG_DARK if im else theme.TEXT_PRIMARY
+        self._btn_stroop.background_color = theme.BORDER_DARK if im else theme.GOLD
+        self._btn_stroop.color            = theme.TEXT_PRIMARY if im else theme.BG_DARK
+        self._stroop_row.opacity  = 0 if im else 1; self._stroop_row.disabled  = im
+        self._math_row.opacity    = 1 if im else 0; self._math_row.disabled    = not im
+        if self._is_running: self._next_round()
 
-            self._stroop_row.opacity = 0
-            self._stroop_row.disabled = True
-            self._math_row.opacity = 1
-            self._math_row.disabled = False
-        else:
-            self._btn_stroop.state = 'down'
-            self._btn_math.state = 'normal'
-            self._btn_stroop.background_color = theme.GOLD
-            self._btn_stroop.color = theme.BG_DARK
-            self._btn_math.background_color = theme.BORDER_DARK
-            self._btn_math.color = theme.TEXT_PRIMARY
+    def start_task(self): self._start()
 
-            self._stroop_row.opacity = 1
-            self._stroop_row.disabled = False
-            self._math_row.opacity = 0
-            self._math_row.disabled = True
-        if self._is_running:
-            self._next_round()
-
-    def start_task(self):
-        self._start()
-
-    def stop(self):
-        if self._is_running:
-            self._toggle()
-
-    def _toggle(self, *args):
-        if self._is_running:
-            self.stop()
-        else:
-            self._start()
+    def _toggle(self, *a):
+        self.stop() if self._is_running else self._start()
 
     def _start(self):
-        if self._is_running:
-            return
-        self._is_running = True
-        self._score = 0
-        self._score_lbl.text = 'Score: 0'
-        self._start_btn.text = 'STOP'
-        self._start_btn.color = theme.RED
+        if self._is_running: return
+        self._is_running = True; self._score = 0; self._score_lbl.text = 'Score: 0'
+        self._start_btn.text = 'STOP'; self._start_btn.color = theme.RED
         self._start_btn.bg_color = theme.DANGER_BUTTON_BG
         self._next_round()
-        self._clock_event = Clock.schedule_interval(
-            lambda dt: self._next_round(), 3.0
-        )
+        self._clock_event = Clock.schedule_interval(lambda dt: self._next_round(), 3.0)
 
     def stop(self):
-        if self._clock_event:
-            self._clock_event.cancel()
-            self._clock_event = None
+        if self._clock_event: self._clock_event.cancel(); self._clock_event = None
         self._is_running = False
-        self._start_btn.text = 'START'
-        self._start_btn.color = theme.GOLD
+        self._start_btn.text = 'START'; self._start_btn.color = theme.GOLD
         self._start_btn.bg_color = theme.BUTTON_BG
 
     def _next_round(self):
         if self._is_math_mode:
-            a = random.randint(10, 99)
-            b = random.randint(10, 99)
-            is_add = random.choice([True, False])
-            self._math_answer = a + b if is_add else a - b
-            op = '+' if is_add else '-'
-            self._math_problem = f'{a} {op} {b} = ?'
-            self._display_lbl.text = self._math_problem
-            self._display_lbl.color = theme.RED
-            self._math_input.text = ''
+            a = random.randint(10, 99); b = random.randint(10, 99)
+            ia = random.choice([True, False])
+            self._math_answer = a + b if ia else a - b
+            self._display_lbl.text = f'{a} {"+" if ia else "-"} {b} = ?'
+            self._display_lbl.color = theme.RED; self._math_input.text = ''
         else:
-            word = random.choice(self._colors)
-            ink_name = random.choice(self._colors)
-            self._display_word = word
-            self._ink_color = self._color_map[ink_name]
-            self._current_ink_name = ink_name
-            self._display_lbl.text = word
-            self._display_lbl.color = self._ink_color
+            word = random.choice(self._colors); ink = random.choice(self._colors)
+            self._current_ink_name = ink
+            self._display_lbl.text = word; self._display_lbl.color = self._color_map[ink]
 
-    def _check_stroop(self, color_name):
-        if not self._is_running:
-            return
-        if color_name == self._current_ink_name:
-            self._score += 50
-            self._score_lbl.text = f'Score: {self._score}'
-        # Reset timer
-        if self._clock_event:
-            self._clock_event.cancel()
+    def _check_stroop(self, cn):
+        if not self._is_running: return
+        if cn == self._current_ink_name:
+            self._score += 50; self._score_lbl.text = f'Score: {self._score}'
+        if self._clock_event: self._clock_event.cancel()
         self._next_round()
-        self._clock_event = Clock.schedule_interval(
-            lambda dt: self._next_round(), 3.0
-        )
+        self._clock_event = Clock.schedule_interval(lambda dt: self._next_round(), 3.0)
 
     def _check_math(self):
-        if not self._is_running:
-            return
-        try:
-            answer = int(self._math_input.text)
-        except (ValueError, TypeError):
-            answer = 0
-        if answer == self._math_answer:
-            self._score += 50
-            self._score_lbl.text = f'Score: {self._score}'
-        # Reset timer
-        if self._clock_event:
-            self._clock_event.cancel()
+        if not self._is_running: return
+        try: ans = int(self._math_input.text)
+        except: ans = 0
+        if ans == self._math_answer:
+            self._score += 50; self._score_lbl.text = f'Score: {self._score}'
+        if self._clock_event: self._clock_event.cancel()
         self._next_round()
-        self._clock_event = Clock.schedule_interval(
-            lambda dt: self._next_round(), 3.0
-        )
+        self._clock_event = Clock.schedule_interval(lambda dt: self._next_round(), 3.0)
 
     def cleanup(self):
-        """Call when removing widget to stop timers."""
-        if self._clock_event:
-            self._clock_event.cancel()
+        if self._clock_event: self._clock_event.cancel()
 
 
 # ============================================================
-# File: screens/dashboard_screen.py
+# Voice Assistant Mixin — shared by DashboardScreen & Phase2NotesScreen
 # ============================================================
+class VoiceAssistantMixin:
+    """
+    Drop-in mixin providing full ESP32 → Whisper → Ollama pipeline.
 
-"""
-Dashboard screen matching Flutter's DashboardScreen.
-Shows welcome title, live status, stat cards, event log, and refresh button.
-"""
-from kivy.uix.boxlayout import BoxLayout
-from kivy.uix.scrollview import ScrollView
-from kivy.uix.label import Label
-from kivy.graphics import Color, Rectangle, RoundedRectangle
+    The host class must set:
+        self._app_state  — AppState instance
+    And expose a label via:
+        self._voice_response_label — AutoLabel for displaying responses
+    """
+
+    def _init_voice_assistant(self):
+        """Call once at end of __init__ to set up voice state."""
+        self._voice_thread   = None
+        self._whisper_model  = None   # lazy-loaded
+        self._tcp_listener   = None   # background TCP socket for Whisper server push
+        self._voice_tcp_port = 5050   # NeuroMentor TCP receive port (matches whisper_server.py)
+        self._start_tcp_listener()
+
+    # ── TCP listener for Whisper-server push (port 5050) ─────────────
+    def _start_tcp_listener(self):
+        """Listen for text forwarded by whisper_server.py on port 5050."""
+        def _listen():
+            try:
+                srv = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+                srv.bind(('0.0.0.0', self._voice_tcp_port))
+                srv.listen(3)
+                srv.settimeout(1.0)
+                print(f'[VoiceAssistant] TCP listener ready on port {self._voice_tcp_port}')
+                while True:
+                    try:
+                        conn, addr = srv.accept()
+                        data = b''
+                        conn.settimeout(2.0)
+                        try:
+                            while True:
+                                chunk = conn.recv(4096)
+                                if not chunk: break
+                                data += chunk
+                        except Exception:
+                            pass
+                        finally:
+                            conn.close()
+                        if data:
+                            text = data.decode('utf-8', errors='replace').strip()
+                            if text:
+                                print(f'[VoiceAssistant] Received via TCP: {text}')
+                                self._update_voice_response(f'Transcribed: {text}\nQuerying Ollama...')
+                                threading.Thread(
+                                    target=self._query_ollama_and_display,
+                                    args=(text,), daemon=True).start()
+                    except socket.timeout:
+                        continue
+                    except Exception as e:
+                        print(f'[VoiceAssistant TCP] {e}')
+            except Exception as e:
+                print(f'[VoiceAssistant TCP bind] {e}')
+
+        t = threading.Thread(target=_listen, daemon=True)
+        t.start()
+
+    # ── Button handler ────────────────────────────────────────────────
+    def start_esp32_voice(self, *args):
+        """Triggered by the voice button press."""
+        if self._voice_thread is not None and self._voice_thread.is_alive():
+            self._update_voice_response('Already processing a request...')
+            return
+        self._update_voice_response('Connecting to ESP32...')
+        self._voice_thread = threading.Thread(target=self._process_voice_pipeline, daemon=True)
+        self._voice_thread.start()
+
+    # ── Main pipeline (background thread) ────────────────────────────
+    def _process_voice_pipeline(self):
+        """Full pipeline: receive audio → WAV → Whisper → Ollama → UI."""
+        try:
+            self._update_voice_response('Reading audio from ESP32...')
+            audio_bytes = self._receive_esp32_audio()
+
+            if not audio_bytes:
+                # If no ESP32 audio, check if Whisper server already forwarded text via TCP
+                self._update_voice_response(
+                    'No ESP32 audio received.\n'
+                    'If using whisper_server.py (port 9999), audio is handled externally.\n'
+                    'Waiting for transcription on port 5050...')
+                return
+
+            # Save WAV — always use user_data_dir for Android compatibility
+            wav_path = os.path.join(
+                App.get_running_app().user_data_dir,
+                'neuromentor_voice_query.wav')
+            self._update_voice_response('Saving audio...')
+            self._write_wav(wav_path, bytes(audio_bytes))
+
+            # Transcribe with Whisper
+            self._update_voice_response('Transcribing with Whisper...')
+            text = self._transcribe_whisper(wav_path)
+            if not text:
+                self._update_voice_response('Whisper returned empty transcription.')
+                return
+
+            self._update_voice_response(f'You said: {text}\n\nContacting Ollama...')
+            self._query_ollama_and_display(text)
+
+        except Exception as exc:
+            print(f'[VoiceAssistant pipeline] {exc}')
+            traceback.print_exc()
+            self._update_voice_response(f'Pipeline error: {str(exc)[:120]}')
+
+    # ── ESP32 audio reception ─────────────────────────────────────────
+    def _receive_esp32_audio(self) -> bytes:
+        """
+        Try Serial first (COM ports / /dev/ttyUSB*), then TCP socket.
+        Returns raw 16kHz 16-bit mono PCM bytes or b''.
+        """
+        expected_bytes = 16000 * 2 * 5  # 5 seconds
+        audio = bytearray()
+        start = time.time()
+        timeout = 12  # seconds
+
+        # --- Serial ports ---
+        serial_ports = []
+        if getattr(self._app_state, 'selected_port', None):
+            serial_ports.append(self._app_state.selected_port)
+        if platform == 'android':
+            serial_ports += ['/dev/ttyUSB0', '/dev/ttyUSB1', '/dev/ttyS0']
+        else:
+            serial_ports += ['COM3', 'COM4', 'COM5', 'COM6',
+                             '/dev/ttyUSB0', '/dev/ttyUSB1']
+
+        if _HAS_SERIAL:
+            for port in serial_ports:
+                try:
+                    with _serial_mod.Serial(port, 115200, timeout=1) as ser:
+                        print(f'[ESP32] Serial connected: {port}')
+                        audio = bytearray()
+                        while len(audio) < expected_bytes and (time.time() - start) < timeout:
+                            chunk = ser.read(min(4096, expected_bytes - len(audio)))
+                            if chunk:
+                                audio.extend(chunk)
+                    if audio:
+                        print(f'[ESP32] Serial received {len(audio)} bytes from {port}')
+                        return bytes(audio)
+                except Exception as exc:
+                    print(f'[ESP32 Serial] {port}: {exc}')
+
+        # --- TCP sockets ---
+        tcp_targets = [
+            ('192.168.4.1', 5000),   # ESP32 AP default IP
+            ('192.168.4.2', 5000),
+            ('192.168.1.100', 5000),
+            ('127.0.0.1', 5000),
+        ]
+        for host, port in tcp_targets:
+            try:
+                with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+                    sock.settimeout(4)
+                    sock.connect((host, port))
+                    print(f'[ESP32] TCP connected: {host}:{port}')
+                    audio = bytearray()
+                    while len(audio) < expected_bytes and (time.time() - start) < timeout:
+                        remaining = expected_bytes - len(audio)
+                        chunk = sock.recv(min(4096, remaining))
+                        if not chunk:
+                            break
+                        audio.extend(chunk)
+                if audio:
+                    print(f'[ESP32] TCP received {len(audio)} bytes from {host}:{port}')
+                    return bytes(audio)
+            except Exception as exc:
+                print(f'[ESP32 TCP] {host}:{port}: {exc}')
+
+        return b''
+
+    # ── WAV writer ────────────────────────────────────────────────────
+    def _write_wav(self, path: str, pcm_bytes: bytes):
+        with wave.open(path, 'wb') as wf:
+            wf.setnchannels(1)
+            wf.setsampwidth(2)
+            wf.setframerate(16000)
+            wf.writeframes(pcm_bytes)
+
+    # ── Whisper transcription ─────────────────────────────────────────
+    def _transcribe_whisper(self, path: str) -> str:
+        if not _HAS_WHISPER:
+            return '[whisper not installed]'
+        try:
+            if self._whisper_model is None:
+                print('[Whisper] Loading model...')
+                self._whisper_model = _whisper_mod.load_model('base')
+                print('[Whisper] Model loaded.')
+            result = self._whisper_model.transcribe(path)
+            return result.get('text', '').strip()
+        except Exception as e:
+            print(f'[Whisper] {e}')
+            return ''
+
+    # ── Ollama query ──────────────────────────────────────────────────
+    def _query_ollama_and_display(self, text: str):
+        """Query Ollama and push result to UI. Safe to call from any thread."""
+        if not _HAS_REQUESTS:
+            self._update_voice_response(
+                f'Query: {text}\n\n[requests not installed — cannot reach Ollama]')
+            return
+        try:
+            ollama_hosts = [
+                'http://localhost:11434/api/generate',
+                'http://127.0.0.1:11434/api/generate',
+            ]
+            # On Android, if running a local Ollama instance on the same device:
+            if platform == 'android':
+                ollama_hosts.insert(0, 'http://10.0.2.2:11434/api/generate')
+
+            last_err = None
+            for url in ollama_hosts:
+                try:
+                    resp = _requests_mod.post(
+                        url,
+                        json={
+                            'model': 'llama3',
+                            'prompt': text,
+                            'stream': False,
+                        },
+                        timeout=30)
+                    resp.raise_for_status()
+                    payload = resp.json()
+                    answer  = (payload.get('response') or payload.get('text') or '').strip()
+                    answer  = answer or 'Ollama returned an empty response.'
+                    self._update_voice_response(answer)
+                    return
+                except Exception as e:
+                    last_err = e
+                    print(f'[Ollama] {url}: {e}')
+
+            self._update_voice_response(
+                f'Could not reach Ollama.\nQuery was: {text}\nError: {last_err}')
+        except Exception as exc:
+            print(f'[Ollama] {exc}')
+            self._update_voice_response(f'Ollama error: {str(exc)[:120]}')
+
+    # ── Thread-safe UI update ─────────────────────────────────────────
+    def _update_voice_response(self, text: str):
+        Clock.schedule_once(
+            lambda dt: setattr(self._voice_response_label, 'text', text), 0)
 
 
-class DashboardScreen(BoxLayout):
-    """Dashboard with status overview and event log."""
+# ============================================================
+# Helper — Phase2 button builder (shared)
+# ============================================================
+def _build_phase2_button(title, callback):
+    btn = AutoButton(
+        text=title,
+        font_size=theme.font(theme.FONT_BODY_REGULAR),
+        color=theme.TEXT_PRIMARY,
+        halign='center', valign='middle')
+    btn.size_hint_y = None
+    btn.bind(on_press=callback)
+    with btn.canvas.before:
+        Color(*theme.BUTTON_BG)
+        btn._bg_rect = RoundedRectangle(pos=btn.pos, size=btn.size, radius=[dp(10)])
+    btn.bind(
+        pos=lambda inst, v: setattr(btn._bg_rect, 'pos', btn.pos),
+        size=lambda inst, v: setattr(btn._bg_rect, 'size', btn.size))
+    return btn
 
+
+# ============================================================
+# DashboardScreen
+# ============================================================
+class DashboardScreen(VoiceAssistantMixin, ScrollView):
     def __init__(self, app_state, **kwargs):
-        super().__init__(orientation='vertical', padding=20, spacing=15, **kwargs)
+        super().__init__(do_scroll_x=False, do_scroll_y=True, **kwargs)
         self._app_state = app_state
 
-        # Welcome title
+        self._inner = BoxLayout(
+            orientation='vertical',
+            padding=[dp(16), dp(16), dp(16), dp(16)],
+            spacing=dp(12),
+            size_hint_y=None)
+        self._inner.bind(minimum_height=self._inner.setter('height'))
+        self.add_widget(self._inner)
+
+        # ── Welcome label ──────────────────────────────────────
         self._welcome_lbl = Label(
             text='WELCOME BACK, USER',
             font_size=theme.font(theme.FONT_TITLE_MEDIUM),
-            bold=True,
-            color=theme.GOLD,
-            size_hint_y=None,
-            height=35,
-            halign='left',
-            valign='middle',
-        )
-        self._welcome_lbl.bind(size=self._welcome_lbl.setter('text_size'))
-        self.add_widget(self._welcome_lbl)
-
-        # Update welcome text when user changes
+            bold=True, color=theme.GOLD,
+            size_hint_y=None, halign='left', valign='middle')
+        self._welcome_lbl.bind(
+            size=self._welcome_lbl.setter('text_size'),
+            texture_size=lambda inst, sz: setattr(inst, 'height', max(sz[1], dp(32))))
+        self._inner.add_widget(self._welcome_lbl)
         app_state.bind(current_user=self._update_welcome)
         self._update_welcome()
 
-        # Live status card
-        status_card = GradientCard(
-            size_hint_y=None,
-            height=80,
-            padding=[20, 15]
-        )
-        # Removed LIVE STATUS text to prevent overlapping
-        status_value = Label(
-            text='OFFLINE',
+        # ── Status card ────────────────────────────────────────
+        status_card = GradientCard(size_hint_y=None, height=dp(70), padding=[dp(16), dp(10)])
+        sv = Label(text='OFFLINE',
             font_size=theme.font(theme.FONT_HEADING_MEDIUM),
-            color=theme.TEXT_SECONDARY,
-            halign='left',
-            valign='middle',
-        )
-        status_value.bind(size=status_value.setter('text_size'))
-        status_card.add_widget(status_value)
-        self.add_widget(status_card)
+            color=theme.TEXT_SECONDARY, halign='left', valign='middle')
+        sv.bind(size=sv.setter('text_size'),
+                texture_size=lambda inst, sz: setattr(inst, 'height', max(sz[1], dp(28))))
+        status_card.add_widget(sv)
+        self._inner.add_widget(status_card)
 
-        # Stat cards row
-        stats_row = BoxLayout(spacing=15, size_hint_y=None, height=100)
+        # ── Stats row ──────────────────────────────────────────
+        stats_row = BoxLayout(spacing=dp(12), size_hint_y=None, height=dp(100))
         stats_row.add_widget(self._build_stat_card('STRESS', 'N/A', theme.RED))
-        stats_row.add_widget(self._build_stat_card('FOCUS', 'N/A', theme.TEAL))
+        stats_row.add_widget(self._build_stat_card('FOCUS',  'N/A', theme.TEAL))
         stats_row.add_widget(self._build_stat_card('NEURO XP', '0', theme.GOLD))
-        self.add_widget(stats_row)
+        self._inner.add_widget(stats_row)
 
-        # Event log title
-        log_title = Label(
-            text='EVENT LOG',
+        # ── Event log ──────────────────────────────────────────
+        lt = Label(text='EVENT LOG',
             font_size=theme.font(theme.FONT_BODY_SMALL),
-            color=theme.TEXT_SECONDARY,
-            size_hint_y=None,
-            height=18,
-            halign='left',
-            valign='middle',
-        )
-        log_title.bind(size=log_title.setter('text_size'))
-        self.add_widget(log_title)
+            color=theme.TEXT_SECONDARY, size_hint_y=None, halign='left', valign='middle')
+        lt.bind(size=lt.setter('text_size'),
+                texture_size=lambda inst, sz: setattr(inst, 'height', max(sz[1], dp(18))))
+        self._inner.add_widget(lt)
 
-        # Event log box
-        log_box = GradientCard(size_hint_y=0.4, padding=[10, 10])
-        log_label = Label(
-            text='No events yet',
+        log_box = GradientCard(size_hint_y=None, height=dp(200), padding=[dp(10), dp(10)])
+        ll = Label(text='No events yet',
             font_size=theme.font(theme.FONT_BODY_REGULAR),
-            color=theme.TEAL,
-            halign='left',
-            valign='top',
-        )
-        log_label.bind(size=log_label.setter('text_size'))
-        log_box.add_widget(log_label)
-        self.add_widget(log_box)
+            color=theme.TEAL, halign='left', valign='top')
+        ll.bind(size=ll.setter('text_size'),
+                texture_size=lambda inst, sz: setattr(inst, 'height', max(sz[1], dp(40))))
+        log_box.add_widget(ll)
+        self._inner.add_widget(log_box)
 
-        # Refresh button
-        refresh_btn = ShadowButton(
+        # ── Phase 2 section header ─────────────────────────────
+        phase2_header = AutoLabel(
+            text='PHASE 2 FEATURES',
+            font_size=theme.font(theme.FONT_BODY_SMALL),
+            bold=True, color=theme.TEXT_SECONDARY,
+            size_hint_y=None, halign='left', valign='middle')
+        phase2_header.bind(
+            size=phase2_header.setter('text_size'),
+            texture_size=lambda inst, sz: setattr(inst, 'height', max(sz[1], dp(18))))
+        self._inner.add_widget(phase2_header)
+
+        # ── Phase 2 buttons ────────────────────────────────────
+        phase2_group = BoxLayout(orientation='vertical', spacing=dp(12), size_hint_y=None)
+        phase2_group.bind(minimum_height=phase2_group.setter('height'))
+        phase2_group.add_widget(_build_phase2_button('🎤 Ask NeuroMentor', self.start_esp32_voice))
+        phase2_group.add_widget(_build_phase2_button('PHASE 2 INSIGHTS',  self._on_phase2_insights))
+        self._inner.add_widget(phase2_group)
+
+        # ── Voice response label ───────────────────────────────
+        self._voice_response_label = AutoLabel(
+            text='Voice assistant ready. Press 🎤 to ask a question.',
+            font_size=theme.font(theme.FONT_BODY_SMALL),
+            color=theme.TEXT_MUTED, size_hint_y=None,
+            halign='left', valign='middle')
+        self._voice_response_label.bind(
+            size=self._voice_response_label.setter('text_size'),
+            texture_size=lambda inst, sz: setattr(inst, 'height', max(sz[1], dp(24))))
+        self._inner.add_widget(self._voice_response_label)
+
+        # ── System refresh button ──────────────────────────────
+        rb = ShadowButton(
             text='SYSTEM REFRESH',
-            font_size=theme.font(theme.FONT_BODY_REGULAR),
-            bold=True,
-            size_hint_y=None,
-            height=45,
-            background_color=theme.BUTTON_BG,
-            color=theme.GOLD,
-        )
-        self.add_widget(refresh_btn)
+            font_size=theme.font(theme.FONT_BODY_REGULAR), bold=True,
+            size_hint_y=None, height=dp(44),
+            background_color=theme.BUTTON_BG, color=theme.GOLD)
+        self._inner.add_widget(rb)
 
-    def _update_welcome(self, *args):
-        user = self._app_state.current_user
-        name = (user.name.upper() if user and user.name else 'USER')
-        self._welcome_lbl.text = f'WELCOME BACK, {name}'
+        # ── Init voice assistant mixin ─────────────────────────
+        self._init_voice_assistant()
 
-    def _build_stat_card(self, title, value, accent_color):
-        card = GradientCard(
-            accent_color=accent_color,
-            padding=[15, 10]
-        )
+    # ── Helpers ───────────────────────────────────────────────────────
+    def _update_welcome(self, *a):
+        u = self._app_state.current_user
+        n = u.name.upper() if u and u.name else 'USER'
+        self._welcome_lbl.text = f'WELCOME BACK, {n}'
 
-        t = Label(
-            text=title,
-            font_size=theme.font(theme.FONT_BODY_SMALL),
-            color=theme.TEXT_MUTED,
-            size_hint_y=None,
-            height=16,
-            halign='left',
-            valign='middle',
-        )
-        t.bind(size=t.setter('text_size'))
+    def _on_phase2_insights(self, *args):
+        try:
+            idx = PAGE_NAMES.index('PHASE 2 INSIGHTS')
+            self._app_state.set_selected_page(idx)
+        except ValueError:
+            pass
+
+    def _build_stat_card(self, title, value, accent):
+        card = GradientCard(accent_color=accent, padding=[dp(12), dp(8)],
+                            size_hint_y=None, height=dp(90))
+        t = Label(text=title, font_size=theme.font(theme.FONT_BODY_SMALL),
+            color=theme.TEXT_MUTED, size_hint_y=None, halign='left', valign='middle')
+        t.bind(size=t.setter('text_size'),
+               texture_size=lambda inst, sz: setattr(inst, 'height', max(sz[1], dp(16))))
         card.add_widget(t)
-
-        v = Label(
-            text=value,
-            font_size=theme.font(theme.FONT_HEADING_LARGE),
-            bold=True,
-            color=accent_color,
-            halign='left',
-            valign='middle',
-        )
-        v.bind(size=v.setter('text_size'))
+        v = Label(text=value, font_size=theme.font(theme.FONT_HEADING_LARGE),
+            bold=True, color=accent, size_hint_y=None, halign='left', valign='middle')
+        v.bind(size=v.setter('text_size'),
+               texture_size=lambda inst, sz: setattr(inst, 'height', max(sz[1], dp(28))))
         card.add_widget(v)
-
         return card
 
 
 # ============================================================
-# File: screens/profile_screen.py
+# Phase2NotesScreen  (Voice Assistant dedicated page)
 # ============================================================
-
-"""
-Profile screen matching Flutter's ProfileScreen.
-Form with name, age, notes fields and save button.
-"""
-from kivy.uix.boxlayout import BoxLayout
-from kivy.uix.scrollview import ScrollView
-from kivy.uix.label import Label
-from kivy.uix.textinput import TextInput
-from kivy.uix.popup import Popup
-from kivy.graphics import Color, RoundedRectangle, Rectangle
-
-
-class ProfileScreen(BoxLayout):
-    """User profile editing form."""
-
+class Phase2NotesScreen(VoiceAssistantMixin, ScrollView):
     def __init__(self, app_state, **kwargs):
-        super().__init__(orientation='vertical', padding=20, spacing=15, **kwargs)
+        super().__init__(do_scroll_x=False, do_scroll_y=True, **kwargs)
         self._app_state = app_state
+        self._inner = BoxLayout(
+            orientation='vertical',
+            padding=[dp(16), dp(16), dp(16), dp(16)],
+            spacing=dp(12),
+            size_hint_y=None)
+        self._inner.bind(minimum_height=self._inner.setter('height'))
+        self.add_widget(self._inner)
 
-        # Title banner
-        title_box = GradientCard(
-            size_hint_y=None, height=50, padding=[10, 10], radius=10
-        )
-        title_lbl = Label(
-            text='USER PROFILE',
+        title = AutoLabel(
+            text='VOICE ASSISTANT',
             font_size=theme.font(theme.FONT_TITLE_MEDIUM),
-            bold=True,
-            color=theme.GOLD,
-            halign='left',
-            valign='middle',
-        )
-        title_lbl.bind(size=title_lbl.setter('text_size'))
-        title_box.add_widget(title_lbl)
-        self.add_widget(title_box)
+            bold=True, color=theme.GOLD, size_hint_y=None,
+            halign='left', valign='middle')
+        title.bind(
+            size=title.setter('text_size'),
+            texture_size=lambda inst, sz: setattr(inst, 'height', max(sz[1], dp(32))))
+        self._inner.add_widget(title)
 
-        # Form container
-        form_box = GradientCard(
-            padding=[20, 20]
-        )
-        # Full Name
-        name_lbl = Label(
-            text='FULL NAME:',
+        hint = AutoLabel(
+            text='Speak a question — the ESP32 captures audio, Whisper transcribes it, '
+                 'and Ollama (llama3) generates an answer locally.',
+            font_size=theme.font(theme.FONT_BODY_SMALL),
+            color=theme.TEXT_SECONDARY, size_hint_y=None,
+            halign='left', valign='middle')
+        hint.bind(
+            size=hint.setter('text_size'),
+            texture_size=lambda inst, sz: setattr(inst, 'height', max(sz[1], dp(24))))
+        self._inner.add_widget(hint)
+
+        # Architecture info card
+        arch_card = GradientCard(size_hint_y=None, padding=[dp(12), dp(10)])
+        arch_card.bind(minimum_height=arch_card.setter('height'))
+        arch_info = AutoLabel(
+            text='Architecture: ESP32 mic → Serial/TCP → WAV → Whisper base → Ollama llama3\n'
+                 'TCP push mode: whisper_server.py (port 9999) → NeuroMentor (port 5050)',
+            font_size=theme.font(theme.FONT_BODY_SMALL),
+            color=theme.TEXT_MUTED, size_hint_y=None,
+            halign='left', valign='middle')
+        arch_info.bind(
+            size=arch_info.setter('text_size'),
+            texture_size=lambda inst, sz: setattr(inst, 'height', max(sz[1], dp(36))))
+        arch_card.add_widget(arch_info)
+        self._inner.add_widget(arch_card)
+
+        self._voice_button = _build_phase2_button('🎤 Ask NeuroMentor', self.start_esp32_voice)
+        self._inner.add_widget(self._voice_button)
+
+        # Voice response display
+        resp_card = GradientCard(size_hint_y=None, padding=[dp(12), dp(10)])
+        resp_card.bind(minimum_height=resp_card.setter('height'))
+
+        resp_header = AutoLabel(
+            text='RESPONSE',
+            font_size=theme.font(theme.FONT_BODY_SMALL),
+            bold=True, color=theme.GOLD, size_hint_y=None,
+            halign='left', valign='middle')
+        resp_header.bind(
+            size=resp_header.setter('text_size'),
+            texture_size=lambda inst, sz: setattr(inst, 'height', max(sz[1], dp(18))))
+        resp_card.add_widget(resp_header)
+
+        self._voice_response_label = AutoLabel(
+            text='Response will appear here.',
             font_size=theme.font(theme.FONT_BODY_REGULAR),
-            color=theme.TEAL,
-            bold=True,
-            size_hint_y=None,
-            height=20,
-            halign='left',
-            valign='middle',
-        )
-        name_lbl.bind(size=name_lbl.setter('text_size'))
-        form_box.add_widget(name_lbl)
+            color=theme.TEXT_PRIMARY, size_hint_y=None,
+            halign='left', valign='middle')
+        self._voice_response_label.bind(
+            size=self._voice_response_label.setter('text_size'),
+            texture_size=lambda inst, sz: setattr(inst, 'height', max(sz[1], dp(80))))
+        resp_card.add_widget(self._voice_response_label)
+        self._inner.add_widget(resp_card)
 
-        self._name_input = TextInput(
+        # Init mixin
+        self._init_voice_assistant()
+
+
+# ============================================================
+# Phase2InsightsScreen
+# ============================================================
+class Phase2InsightsScreen(ScrollView):
+    def __init__(self, app_state, **kwargs):
+        super().__init__(do_scroll_x=False, do_scroll_y=True, **kwargs)
+        self._app_state = app_state
+        self._inner = BoxLayout(
+            orientation='vertical',
+            padding=[dp(16), dp(16), dp(16), dp(16)],
+            spacing=dp(12),
+            size_hint_y=None)
+        self._inner.bind(minimum_height=self._inner.setter('height'))
+        self.add_widget(self._inner)
+
+        title = AutoLabel(
+            text='PHASE 2 INSIGHTS',
+            font_size=theme.font(theme.FONT_TITLE_MEDIUM),
+            bold=True, color=theme.GOLD, size_hint_y=None,
+            halign='left', valign='middle')
+        title.bind(
+            size=title.setter('text_size'),
+            texture_size=lambda inst, sz: setattr(inst, 'height', max(sz[1], dp(32))))
+        self._inner.add_widget(title)
+
+        hint = AutoLabel(
+            text='Enter 5 EEG band values as comma-separated numbers.',
+            font_size=theme.font(theme.FONT_BODY_SMALL),
+            color=theme.TEXT_SECONDARY, size_hint_y=None,
+            halign='left', valign='middle')
+        hint.bind(
+            size=hint.setter('text_size'),
+            texture_size=lambda inst, sz: setattr(inst, 'height', max(sz[1], dp(24))))
+        self._inner.add_widget(hint)
+
+        self._input = TextInput(
+            hint_text='delta, theta, alpha, beta, gamma',
             font_size=theme.font(theme.FONT_BODY_REGULAR),
-            multiline=False,
-            size_hint_y=None,
-            height=40,
-            background_color=theme.INPUT_BG,
-            foreground_color=theme.TEXT_PRIMARY,
-            cursor_color=theme.TEAL,
-            padding=[12, 10],
-        )
-        form_box.add_widget(self._name_input)
+            multiline=False, size_hint_y=None, height=dp(44),
+            background_color=theme.INPUT_BG, foreground_color=theme.TEXT_PRIMARY,
+            padding=[dp(12), dp(12)])
+        self._inner.add_widget(self._input)
 
-        # Age
-        age_lbl = Label(
-            text='AGE:',
-            font_size=theme.font(theme.FONT_BODY_REGULAR),
-            color=theme.TEAL,
-            bold=True,
-            size_hint_y=None,
-            height=20,
-            halign='left',
-            valign='middle',
-        )
-        age_lbl.bind(size=age_lbl.setter('text_size'))
-        form_box.add_widget(age_lbl)
+        self._run_btn = _build_phase2_button('RUN PREDICTION', self.on_run_prediction)
+        self._inner.add_widget(self._run_btn)
 
-        self._age_input = TextInput(
-            font_size=theme.font(theme.FONT_BODY_REGULAR),
-            multiline=False,
-            input_filter='int',
-            size_hint_y=None,
-            height=40,
-            background_color=theme.INPUT_BG,
-            foreground_color=theme.TEXT_PRIMARY,
-            cursor_color=theme.TEAL,
-            padding=[12, 10],
-        )
-        form_box.add_widget(self._age_input)
+        self._result_lbl = AutoLabel(
+            text='Prediction output appears here.',
+            font_size=theme.font(theme.FONT_BODY_SMALL),
+            color=theme.TEXT_MUTED, size_hint_y=None,
+            halign='left', valign='middle')
+        self._result_lbl.bind(
+            size=self._result_lbl.setter('text_size'),
+            texture_size=lambda inst, sz: setattr(inst, 'height', max(sz[1], dp(24))))
+        self._inner.add_widget(self._result_lbl)
 
-        # Clinical Notes
-        notes_lbl = Label(
-            text='CLINICAL NOTES:',
-            font_size=theme.font(theme.FONT_BODY_REGULAR),
-            color=theme.TEAL,
-            bold=True,
-            size_hint_y=None,
-            height=20,
-            halign='left',
-            valign='middle',
-        )
-        notes_lbl.bind(size=notes_lbl.setter('text_size'))
-        form_box.add_widget(notes_lbl)
+    def on_run_prediction(self, *args):
+        Clock.schedule_once(self._do_run_prediction, 0)
 
-        self._notes_input = TextInput(
-            font_size=theme.font(theme.FONT_BODY_REGULAR),
-            multiline=True,
-            size_hint_y=None,
-            height=120,
-            background_color=theme.INPUT_BG,
-            foreground_color=theme.TEXT_PRIMARY,
-            cursor_color=theme.TEAL,
-            padding=[12, 10],
-        )
-        form_box.add_widget(self._notes_input)
+    def _do_run_prediction(self, dt):
+        try:
+            parts = [p.strip() for p in self._input.text.split(',') if p.strip()]
+            if len(parts) != 5:
+                raise ValueError('Enter exactly 5 comma-separated values.')
+            bands = EegBands(*[float(p) for p in parts])
+            classifier = getattr(self._app_state, 'rf_classifier', None)
+            if classifier is None or not classifier.is_trained:
+                raise RuntimeError('RF model unavailable. Train or load a model first.')
+            features   = classifier.build_feature_vector(bands)
+            prediction = classifier.predict(bands)
+            self._result_lbl.text = f'Prediction: {prediction}\nFeatures: {features[:5]}...'
+        except Exception as exc:
+            self._result_lbl.text = f'Error: {exc}'
 
-        self.add_widget(form_box)
 
-        # Save button
-        save_btn = ShadowButton(
-            text='SAVE PROFILE DATA',
-            font_size=theme.font(theme.FONT_BODY_REGULAR),
-            bold=True,
-            size_hint_y=None,
-            height=45,
-            background_color=theme.GOLD,
-            color=(0, 0, 0, 1),
-        )
-        save_btn.bind(on_press=lambda *a: self._save_profile())
-        self.add_widget(save_btn)
+# ============================================================
+# ProfileScreen
+# ============================================================
+class ProfileScreen(ScrollView):
+    def __init__(self, app_state, **kwargs):
+        super().__init__(do_scroll_x=False, do_scroll_y=True, **kwargs)
+        self._app_state = app_state
+        self._inner = BoxLayout(
+            orientation='vertical',
+            padding=[dp(16), dp(16), dp(16), dp(16)],
+            spacing=dp(12),
+            size_hint_y=None)
+        self._inner.bind(minimum_height=self._inner.setter('height'))
+        self.add_widget(self._inner)
 
-        # Load initial profile data
+        tb = GradientCard(size_hint_y=None, height=dp(50),
+                          padding=[dp(10), dp(10)], radius=10)
+        tl = Label(text='USER PROFILE',
+            font_size=theme.font(theme.FONT_TITLE_MEDIUM),
+            bold=True, color=theme.GOLD, halign='left', valign='middle')
+        tl.bind(size=tl.setter('text_size'),
+                texture_size=lambda inst, sz: setattr(inst, 'height', max(sz[1], dp(32))))
+        tb.add_widget(tl); self._inner.add_widget(tb)
+
+        form = GradientCard(padding=[dp(16), dp(16)], size_hint_y=None)
+        form.bind(minimum_height=form.setter('height'))
+
+        for lbl_text, attr, multi, h in [
+            ('FULL NAME:',      '_name_input',  False, dp(44)),
+            ('AGE:',            '_age_input',   False, dp(44)),
+            ('CLINICAL NOTES:', '_notes_input', True,  dp(120)),
+        ]:
+            lbl = Label(text=lbl_text,
+                font_size=theme.font(theme.FONT_BODY_REGULAR),
+                color=theme.TEAL, bold=True, size_hint_y=None,
+                halign='left', valign='middle')
+            lbl.bind(size=lbl.setter('text_size'),
+                     texture_size=lambda inst, sz: setattr(inst, 'height', max(sz[1], dp(20))))
+            form.add_widget(lbl)
+            inp = TextInput(font_size=theme.font(theme.FONT_BODY_REGULAR),
+                multiline=multi, size_hint_y=None, height=h,
+                background_color=theme.INPUT_BG,
+                foreground_color=theme.TEXT_PRIMARY,
+                cursor_color=theme.TEAL, padding=[dp(12), dp(10)])
+            setattr(self, attr, inp)
+            form.add_widget(inp)
+
+        self._inner.add_widget(form)
+        sb = ShadowButton(text='SAVE PROFILE DATA',
+            font_size=theme.font(theme.FONT_BODY_REGULAR), bold=True,
+            size_hint_y=None, height=dp(44),
+            background_color=theme.GOLD, color=(0, 0, 0, 1))
+        sb.bind(on_press=lambda *a: self._save_profile())
+        self._inner.add_widget(sb)
         app_state.bind(current_user=self._load_profile)
         self._load_profile()
 
-    def _load_profile(self, *args):
-        user = self._app_state.current_user
-        if user:
-            self._name_input.text = user.name or ''
-            self._age_input.text = user.age or ''
-            self._notes_input.text = user.notes or ''
+    def _load_profile(self, *a):
+        u = self._app_state.current_user
+        if u:
+            self._name_input.text  = u.name  or ''
+            self._age_input.text   = u.age   or ''
+            self._notes_input.text = u.notes or ''
 
     def _save_profile(self):
         self._app_state.update_profile(
             name=self._name_input.text,
             age=self._age_input.text,
-            notes=self._notes_input.text,
-        )
-        # Show feedback popup
-        popup = Popup(
-            title='',
-            content=Label(
-                text='PROFILE UPDATED.',
-                font_size=theme.font(theme.FONT_BODY_REGULAR),
-                color=theme.TEXT_PRIMARY,
-            ),
-            size_hint=(None, None),
-            size=(250, 120),
-            background_color=theme.PANEL_BG,
-            auto_dismiss=True,
-        )
-        popup.open()
-        from kivy.clock import Clock
-        Clock.schedule_once(lambda dt: popup.dismiss(), 1.5)
+            notes=self._notes_input.text)
+        pop = Popup(title='', content=Label(
+            text='PROFILE UPDATED.',
+            font_size=theme.font(theme.FONT_BODY_REGULAR),
+            color=theme.TEXT_PRIMARY),
+            size_hint=(None, None), size=(dp(250), dp(120)),
+            background_color=theme.PANEL_BG, auto_dismiss=True)
+        pop.open()
+        Clock.schedule_once(lambda dt: pop.dismiss(), 1.5)
 
 
 # ============================================================
-# File: screens/calibration_screen.py
+# CalibrationScreen
 # ============================================================
-
-"""
-Calibration screen matching Flutter's CalibrationScreen.
-Contains EEG graph, task cards (baseline/stress/focus), and active task display.
-"""
-from kivy.uix.boxlayout import BoxLayout
-from kivy.uix.label import Label
-from kivy.graphics import Color, RoundedRectangle, Rectangle
-from kivy.clock import Clock
-
-
 class CalibrationScreen(BoxLayout):
-    """Calibration module with EEG graph, task selector, and active task display."""
-
     def __init__(self, app_state, **kwargs):
         super().__init__(orientation='vertical', **kwargs)
         self._app_state = app_state
-        self._active_task = None
-        self._active_widget = None
-        self._sequence_running = False
-        self._sequence = []
-        self._sequence_idx = 0
-        self._time_left = 0
-        self._seq_clock = None
-        self._manual_clock = None
-        self._manual_time = 0
-        self._was_running = False
+        self._active_task = self._active_widget = None
+        self._sequence_running = False; self._sequence = []
+        self._sequence_idx = 0; self._time_left = 0
+        self._seq_clock = self._manual_clock = None
+        self._manual_time = 0; self._was_running = False
 
-        # EEG Graph (top)
-        self._eeg_graph = EegGraph(size_hint_y=None, height=160)
+        self._eeg_graph = EegGraph(size_hint_y=None, height=dp(160))
         self.add_widget(self._eeg_graph)
 
-        # Feedback label
-        self._feedback_box = BoxLayout(
-            size_hint_y=None, height=40, padding=[20, 5],
-        )
-        with self._feedback_box.canvas.before:
-            Color(0, 0, 0, 1)
-            self._feedback_box._bg = Rectangle(
-                pos=self._feedback_box.pos, size=self._feedback_box.size
-            )
-        self._feedback_box.bind(
-            pos=lambda inst, val: setattr(inst._bg, 'pos', val),
-            size=lambda inst, val: setattr(inst._bg, 'size', val),
-        )
-        self._feedback_lbl = Label(
-            text='Waiting for signal...',
+        fb = BoxLayout(size_hint_y=None, height=dp(40), padding=[dp(20), dp(5)])
+        with fb.canvas.before:
+            Color(0, 0, 0, 1); fb._bg = Rectangle(pos=fb.pos, size=fb.size)
+        fb.bind(pos=lambda inst, v: setattr(inst._bg, 'pos', v),
+                size=lambda inst, v: setattr(inst._bg, 'size', v))
+        self._feedback_lbl = Label(text='Waiting for signal...',
             font_size=theme.font(theme.FONT_BODY_LARGE),
-            color=theme.TEXT_MUTED,
-            halign='center',
-            valign='middle',
-        )
+            color=theme.TEXT_MUTED, halign='center', valign='middle')
         self._feedback_lbl.bind(size=self._feedback_lbl.setter('text_size'))
-        self._feedback_box.add_widget(self._feedback_lbl)
-        self.add_widget(self._feedback_box)
+        fb.add_widget(self._feedback_lbl); self.add_widget(fb)
 
-        # Content area (task cards or active task)
-        self._content_area = BoxLayout(padding=[20, 10])
+        self._content_area = BoxLayout(padding=[dp(20), dp(10)])
         self.add_widget(self._content_area)
         self._show_task_cards()
 
-        # Execute Sequence Button
-        self._seq_btn_box = BoxLayout(size_hint_y=None, height=60, padding=[20, 10])
-        self._seq_btn_box.bind(minimum_height=self._seq_btn_box.setter('height'))
+        seq_box = BoxLayout(size_hint_y=None, height=dp(60), padding=[dp(20), dp(10)])
         self._execute_btn = ShadowButton(
             text='EXECUTE FULL SEQUENCE (1 HOUR)',
-            font_size=theme.font(theme.FONT_BODY_LARGE),
-            bold=True,
-            background_color=theme.GOLD,
-            color=theme.BG_DARK,
-            halign='center',
-            valign='middle',
-            height=sp(48),
-        )
-        self._execute_btn.bind(size=lambda inst, val: setattr(inst, 'text_size', (inst.width - 20, None)))
-        self._execute_btn.bind(on_press=lambda *a: self._start_sequence())
-        self._seq_btn_box.add_widget(self._execute_btn)
-        self.add_widget(self._seq_btn_box)
+            font_size=theme.font(theme.FONT_BODY_LARGE), bold=True,
+            background_color=theme.GOLD, color=theme.BG_DARK,
+            halign='center', valign='middle', height=dp(48))
+        self._execute_btn.bind(
+            size=lambda inst, v: setattr(inst, 'text_size', (inst.width - dp(20), None)),
+            on_press=lambda *a: self._start_sequence())
+        seq_box.add_widget(self._execute_btn); self.add_widget(seq_box)
 
-        # Control bar
-        control_bar = BoxLayout(
-            orientation='horizontal',
-            size_hint_y=None, height=50, spacing=10,
-        )
-        control_bar.bind(minimum_height=control_bar.setter('height'))
-
-        self._status_lbl = Label(
-            text='STATUS: IDLE',
+        ctrl = BoxLayout(orientation='horizontal', size_hint_y=None, height=dp(50), spacing=dp(10))
+        self._status_lbl = Label(text='STATUS: IDLE',
             font_size=theme.font(theme.FONT_BODY_SMALL),
-            color=theme.TEXT_SECONDARY,
-            size_hint_x=0.3,
-            halign='left',
-            valign='middle',
-        )
+            color=theme.TEXT_SECONDARY, size_hint_x=0.3,
+            halign='left', valign='middle')
         self._status_lbl.bind(size=self._status_lbl.setter('text_size'))
-        control_bar.add_widget(self._status_lbl)
-
-        xp_lbl = Label(
-            text='NEURO XP: 0',
+        ctrl.add_widget(self._status_lbl)
+        ctrl.add_widget(Label(text='NEURO XP: 0',
             font_size=theme.font(theme.FONT_HEADING_MEDIUM),
-            bold=True,
-            color=theme.GOLD,
-            size_hint_x=0.4,
-        )
-        control_bar.add_widget(xp_lbl)
-
-        self._timer_lbl = Label(
-            text='00:00',
-            font_size=theme.font(theme.FONT_TIMER),
-            bold=True,
-            color=theme.TEAL,
-            size_hint_x=0.15,
-        )
-        control_bar.add_widget(self._timer_lbl)
-
-        self._abort_btn = ShadowButton(
-            text='ABORT',
-            font_size=theme.font(theme.FONT_BODY_REGULAR),
-            bold=True,
-            size_hint_x=0.3,
-            background_color=theme.DANGER_BUTTON_BG,
-            color=theme.RED,
-            disabled=True,
-        )
+            bold=True, color=theme.GOLD, size_hint_x=0.4))
+        self._timer_lbl = Label(text='00:00',
+            font_size=theme.font(theme.FONT_TIMER), bold=True,
+            color=theme.TEAL, size_hint_x=0.15)
+        ctrl.add_widget(self._timer_lbl)
+        self._abort_btn = ShadowButton(text='ABORT',
+            font_size=theme.font(theme.FONT_BODY_REGULAR), bold=True,
+            size_hint_x=0.3, background_color=theme.DANGER_BUTTON_BG,
+            color=theme.RED, disabled=True)
         self._abort_btn.bind(on_press=lambda *a: self._stop_task())
-        control_bar.add_widget(self._abort_btn)
-        self.add_widget(control_bar)
+        ctrl.add_widget(self._abort_btn)
+        self.add_widget(ctrl)
 
     def _show_task_cards(self):
         self._content_area.clear_widgets()
-        cards_row = BoxLayout(spacing=15)
-
-        cards_row.add_widget(self._build_task_card(
-            'BASELINE', 'Relaxation',
-            theme.GOLD, 'baseline'
-        ))
-        cards_row.add_widget(self._build_task_card(
-            'STRESS', 'High Load',
-            theme.RED, 'stress'
-        ))
-        cards_row.add_widget(self._build_task_card(
-            'FOCUS', 'Flow State',
-            theme.TEAL, 'focus'
-        ))
-        self._content_area.add_widget(cards_row)
+        row = BoxLayout(spacing=dp(15))
+        for title, sub, accent, tid in [
+            ('BASELINE', 'Relaxation', theme.GOLD, 'baseline'),
+            ('STRESS',   'High Load',  theme.RED,  'stress'),
+            ('FOCUS',    'Flow State', theme.TEAL, 'focus'),
+        ]:
+            row.add_widget(self._build_task_card(title, sub, accent, tid))
+        self._content_area.add_widget(row)
 
     def _build_task_card(self, title, subtitle, accent, task_id):
         card = GradientCard()
-
-        t = Label(
-            text=title,
-            font_size=sp(13),
-            bold=True,
-            color=theme.GOLD,
-            size_hint_y=None,
-            height=25,
-            halign='left',
-            valign='middle',
-        )
-        t.bind(size=t.setter('text_size'))
+        t = Label(text=title, font_size=theme.font(theme.FONT_BODY_LARGE),
+            bold=True, color=theme.GOLD, size_hint_y=None, halign='left', valign='middle')
+        t.bind(size=t.setter('text_size'),
+               texture_size=lambda inst, sz: setattr(inst, 'height', max(sz[1], dp(22))))
         card.add_widget(t)
-
-        s = Label(
-            text=subtitle,
-            font_size=theme.font(theme.FONT_BODY_SMALL),
-            italic=True,
-            color=theme.TEXT_MUTED,
-            size_hint_y=None,
-            height=18,
-            halign='left',
-            valign='middle',
-        )
-        s.bind(size=s.setter('text_size'))
+        s = Label(text=subtitle, font_size=theme.font(theme.FONT_BODY_SMALL),
+            italic=True, color=theme.TEXT_MUTED, size_hint_y=None,
+            halign='left', valign='middle')
+        s.bind(size=s.setter('text_size'),
+               texture_size=lambda inst, sz: setattr(inst, 'height', max(sz[1], dp(18))))
         card.add_widget(s)
-
-        # Spacer
         card.add_widget(Label())
-
-        # Spacer
-        card.add_widget(Label())
-
-        btn = ShadowButton(
-            text='INITIALIZE',
-            font_size=theme.font(theme.FONT_BODY_REGULAR),
-            bold=True,
-            size_hint_y=None,
-            height=40,
-            background_color=theme.BUTTON_BG,
-            color=theme.GOLD,
-        )
+        btn = ShadowButton(text='INITIALIZE',
+            font_size=theme.font(theme.FONT_BODY_REGULAR), bold=True,
+            size_hint_y=None, height=dp(44),
+            background_color=theme.BUTTON_BG, color=theme.GOLD)
         btn.bind(on_press=lambda *a, tid=task_id: self._start_task(tid))
         card.add_widget(btn)
-
         return card
 
     def _start_task(self, task_id):
         self._active_task = task_id
         self._status_lbl.text = f'STATUS: {task_id.upper()}'
-        self._abort_btn.disabled = False
-        self._execute_btn.disabled = True
-
+        self._abort_btn.disabled = False; self._execute_btn.disabled = True
         self._content_area.clear_widgets()
-
-        task_container = GradientCard(padding=[10, 10])
-
-        if task_id == 'baseline':
-            self._active_widget = BreathingWidget()
-        elif task_id == 'stress':
-            self._active_widget = StroopWidget()
-        elif task_id == 'focus':
-            self._active_widget = FocusWidget()
-
-        if self._active_widget:
-            task_container.add_widget(self._active_widget)
-        self._content_area.add_widget(task_container)
-
-        self._manual_time = 0
-        self._was_running = False
-        if self._manual_clock:
-            self._manual_clock.cancel()
+        tc = GradientCard(padding=[dp(10), dp(10)])
+        if task_id == 'baseline': self._active_widget = BreathingWidget()
+        elif task_id == 'stress': self._active_widget = StroopWidget()
+        elif task_id == 'focus':  self._active_widget = FocusWidget()
+        if self._active_widget: tc.add_widget(self._active_widget)
+        self._content_area.add_widget(tc)
+        self._manual_time = 0; self._was_running = False
+        if self._manual_clock: self._manual_clock.cancel()
         self._manual_clock = Clock.schedule_interval(self._manual_tick, 1.0)
         self._timer_lbl.text = '00:00'
 
     def _manual_tick(self, dt):
-        if self._sequence_running:
-            return
-
-        is_running = getattr(self._active_widget, '_is_running', False)
-        
-        if is_running and not self._was_running:
-            self._manual_time = 0
-            self._was_running = True
-        elif not is_running and self._was_running:
-            self._was_running = False
-            
-        if is_running:
+        if self._sequence_running: return
+        ir = getattr(self._active_widget, '_is_running', False)
+        if ir and not self._was_running: self._manual_time = 0; self._was_running = True
+        elif not ir and self._was_running: self._was_running = False
+        if ir:
             self._manual_time += 1
-            mins = self._manual_time // 60
-            secs = self._manual_time % 60
-            self._timer_lbl.text = f'{mins:02d}:{secs:02d}'
+            self._timer_lbl.text = f'{self._manual_time // 60:02d}:{self._manual_time % 60:02d}'
 
     def _start_sequence(self):
-        self._sequence = [
-            ('baseline', '4-7-8'),
-            ('baseline', 'box'),
-            ('focus', 'tracking'),
-            ('focus', 'reading'),
-            ('stress', 'stroop'),
-            ('stress', 'math')
-        ]
-        self._sequence_idx = 0
-        self._sequence_running = True
+        self._sequence = [('baseline', '4-7-8'), ('baseline', 'box'),
+                          ('focus', 'tracking'), ('focus', 'reading'),
+                          ('stress', 'stroop'),  ('stress', 'math')]
+        self._sequence_idx = 0; self._sequence_running = True
         self._run_next_in_sequence()
 
     def _run_next_in_sequence(self):
-        if self._sequence_idx >= len(self._sequence):
-            self._stop_task()
-            return
-
-        task_id, mode = self._sequence[self._sequence_idx]
-        self._start_task(task_id)
-        
+        if self._sequence_idx >= len(self._sequence): self._stop_task(); return
+        tid, mode = self._sequence[self._sequence_idx]
+        self._start_task(tid)
         if self._active_widget and hasattr(self._active_widget, 'set_mode'):
             self._active_widget.set_mode(mode)
             if hasattr(self._active_widget, 'start_task'):
                 self._active_widget.start_task()
-
-        self._time_left = 600 # 10 minutes * 60 seconds
-        if self._seq_clock:
-            self._seq_clock.cancel()
+        self._time_left = 600
+        if self._seq_clock: self._seq_clock.cancel()
         self._seq_clock = Clock.schedule_interval(self._sequence_tick, 1.0)
         self._update_timer_label()
 
     def _sequence_tick(self, dt):
         if self._time_left > 0:
-            self._time_left -= 1
-            self._update_timer_label()
+            self._time_left -= 1; self._update_timer_label()
         else:
             if self._active_widget and hasattr(self._active_widget, '_score'):
-                mode = getattr(self._active_widget, '_mode', getattr(self._active_widget, '_is_math_mode', ''))
-                self._app_state.save_current_user_score(f'{self._active_task}_{mode}', self._active_widget._score)
-            
+                mode = getattr(self._active_widget, '_mode',
+                               getattr(self._active_widget, '_is_math_mode', ''))
+                self._app_state.save_current_user_score(
+                    f'{self._active_task}_{mode}', self._active_widget._score)
             if self._active_widget and hasattr(self._active_widget, 'stop'):
                 self._active_widget.stop()
-
-            self._sequence_idx += 1
-            self._run_next_in_sequence()
+            self._sequence_idx += 1; self._run_next_in_sequence()
 
     def _update_timer_label(self):
-        mins = self._time_left // 60
-        secs = self._time_left % 60
-        self._timer_lbl.text = f'{mins:02d}:{secs:02d}'
+        self._timer_lbl.text = f'{self._time_left // 60:02d}:{self._time_left % 60:02d}'
 
     def _stop_task(self):
-        if self._seq_clock:
-            self._seq_clock.cancel()
-            self._seq_clock = None
-        if self._manual_clock:
-            self._manual_clock.cancel()
-            self._manual_clock = None
-        self._sequence_running = False
-        self._timer_lbl.text = '00:00'
-
+        for clk in [self._seq_clock, self._manual_clock]:
+            if clk: clk.cancel()
+        self._seq_clock = self._manual_clock = None
+        self._sequence_running = False; self._timer_lbl.text = '00:00'
         if self._active_widget and hasattr(self._active_widget, 'cleanup'):
             self._active_widget.cleanup()
-        self._active_task = None
-        self._active_widget = None
+        self._active_task = self._active_widget = None
         self._status_lbl.text = 'STATUS: IDLE'
-        self._abort_btn.disabled = True
-        self._execute_btn.disabled = False
+        self._abort_btn.disabled = True; self._execute_btn.disabled = False
         self._show_task_cards()
 
 
 # ============================================================
-# File: screens/random_forest_screen.py
+# RandomForestScreen
 # ============================================================
-
-"""
-Random Forest training screen.
-Simulated Random Forest training pipeline with console output.
-"""
-from kivy.uix.boxlayout import BoxLayout
-from kivy.uix.scrollview import ScrollView
-from kivy.uix.label import Label
-from kivy.graphics import Color, RoundedRectangle, Rectangle
-from kivy.clock import Clock
-
-
-class RandomForestScreen(BoxLayout):
-    """Random Forest training UI with console output."""
-
+class RandomForestScreen(ScrollView):
     def __init__(self, app_state, **kwargs):
-        super().__init__(orientation='vertical', padding=20, spacing=15, **kwargs)
-        self._app_state = app_state
-        self._log_lines = []
-        self._is_training = False
-        self._is_checking = False
+        super().__init__(do_scroll_x=False, do_scroll_y=True, **kwargs)
+        self._app_state = app_state; self._log_lines = []
+        self._is_training = False; self._is_checking = False
         self._scheduled_events = []
 
-        # Title
-        title = Label(
-            text='RANDOM FOREST TRAINING',
+        self._inner = BoxLayout(
+            orientation='vertical',
+            padding=[dp(16), dp(16), dp(16), dp(16)],
+            spacing=dp(12),
+            size_hint_y=None)
+        self._inner.bind(minimum_height=self._inner.setter('height'))
+        self.add_widget(self._inner)
+
+        title = Label(text='RANDOM FOREST TRAINING',
             font_size=theme.font(theme.FONT_HEADING_MEDIUM),
-            bold=True,
-            color=theme.GOLD,
-            size_hint_y=None,
-            halign='left',
-            valign='middle',
-        )
-        title.bind(size=title.setter('text_size'))
-        self.add_widget(title)
+            bold=True, color=theme.GOLD, size_hint_y=None,
+            halign='left', valign='middle')
+        title.bind(size=title.setter('text_size'),
+                   texture_size=lambda inst, sz: setattr(inst, 'height', max(sz[1], dp(28))))
+        self._inner.add_widget(title)
 
-        # Console output
-        console_box = GradientCard(padding=[10, 10])
-
-        scroll = ScrollView()
-        self._console_label = Label(
-            text='',
+        cbox = GradientCard(padding=[dp(10), dp(10)], size_hint_y=None, height=dp(280))
+        cscroll = ScrollView()
+        self._console_label = Label(text='',
             font_size=theme.font(theme.FONT_BODY_REGULAR),
-            color=theme.TEAL,
-            halign='left',
-            valign='top',
-            size_hint_y=None,
-            markup=False,
-            padding=[10, 10],
-        )
+            color=theme.TEAL, halign='left', valign='top',
+            size_hint_y=None, markup=False, padding=[dp(10), dp(10)])
         self._console_label.bind(
-            texture_size=lambda inst, sz: setattr(inst, 'height', max(sz[1], 100)),
-            width=lambda inst, w: setattr(inst, 'text_size', (w - 20, None)),
-        )
-        scroll.add_widget(self._console_label)
-        console_box.add_widget(scroll)
-        self.add_widget(console_box)
+            texture_size=lambda inst, sz: setattr(inst, 'height', max(sz[1], dp(100))),
+            width=lambda inst, w: setattr(inst, 'text_size', (w - dp(20), None)))
+        cscroll.add_widget(self._console_label)
+        cbox.add_widget(cscroll); self._inner.add_widget(cbox)
 
-        # Generate demo data button
-        self._demo_btn = ShadowButton(
-            text='GENERATE DEMO DATA (TESTING)',
-            font_size=theme.font(theme.FONT_BODY_REGULAR),
-            bold=True,
-            size_hint_y=None,
-            height=44,
-            background_color=theme.BUTTON_BG,
-            color=theme.GOLD,
-        )
-        self._demo_btn.bind(on_press=lambda *a: self._generate_demo_data())
-        self.add_widget(self._demo_btn)
+        for txt, cb in [
+            ('GENERATE DEMO DATA (TESTING)', self._generate_demo_data),
+            ('EXECUTE TRAINING PIPELINE',    self._start_training),
+            ('RUN COMPATIBILITY CHECK',      self._run_compat_check),
+        ]:
+            btn = ShadowButton(text=txt,
+                font_size=theme.font(theme.FONT_BODY_REGULAR), bold=True,
+                size_hint_y=None, height=dp(44),
+                background_color=theme.BUTTON_BG, color=theme.GOLD)
+            btn.bind(on_press=lambda *a, c=cb: c())
+            self._inner.add_widget(btn)
+            if txt == 'GENERATE DEMO DATA (TESTING)': self._demo_btn  = btn
+            elif txt == 'EXECUTE TRAINING PIPELINE':  self._train_btn = btn
+            else:                                     self._compat_btn = btn
 
-        # Train button
-        self._train_btn = ShadowButton(
-            text='EXECUTE TRAINING PIPELINE',
-            font_size=theme.font(theme.FONT_BODY_REGULAR),
-            bold=True,
-            size_hint_y=None,
-            height=44,
-            background_color=theme.BUTTON_BG,
-            color=theme.GOLD,
-        )
-        self._train_btn.bind(on_press=lambda *a: self._start_training())
-        self.add_widget(self._train_btn)
+        ct = Label(text='COMPATIBILITY DIAGNOSTIC',
+            font_size=theme.font(theme.FONT_BODY_REGULAR), bold=True,
+            color=theme.TEXT_SECONDARY, size_hint_y=None,
+            halign='left', valign='middle')
+        ct.bind(size=ct.setter('text_size'),
+                texture_size=lambda inst, sz: setattr(inst, 'height', max(sz[1], dp(24))))
+        self._inner.add_widget(ct)
 
-        # ── Compatibility check button ──
-        self._compat_btn = ShadowButton(
-            text='RUN COMPATIBILITY CHECK',
-            font_size=theme.font(theme.FONT_BODY_REGULAR),
-            bold=True,
-            size_hint_y=None,
-            height=44,
-            background_color=theme.BUTTON_BG,
-            color=theme.GOLD,
-        )
-        self._compat_btn.bind(on_press=lambda *a: self._run_compat_check())
-        self.add_widget(self._compat_btn)
-
-        # ── Compatibility check output area ──
-        compat_title = Label(
-            text='COMPATIBILITY DIAGNOSTIC',
-            font_size=theme.font(theme.FONT_BODY_REGULAR),
-            bold=True,
-            color=theme.TEXT_SECONDARY,
-            size_hint_y=None,
-            height=25,
-            halign='left',
-            valign='middle',
-        )
-        compat_title.bind(size=compat_title.setter('text_size'))
-        self.add_widget(compat_title)
-
-        compat_card = GradientCard(padding=[10, 10])
-        compat_scroll = ScrollView()
+        ccard = GradientCard(padding=[dp(10), dp(10)], size_hint_y=None, height=dp(200))
+        cscrl = ScrollView()
         self._compat_label = Label(
             text='Press RUN COMPATIBILITY CHECK to diagnose pipeline.',
             font_size=theme.font(theme.FONT_BODY_SMALL),
-            color=theme.TEAL,
-            halign='left',
-            valign='top',
-            size_hint_y=None,
-            markup=False,
-            padding=[10, 10],
-        )
+            color=theme.TEAL, halign='left', valign='top',
+            size_hint_y=None, markup=False, padding=[dp(10), dp(10)])
         self._compat_label.bind(
-            texture_size=lambda inst, sz: setattr(inst, 'height', max(sz[1], 80)),
-            width=lambda inst, w: setattr(inst, 'text_size', (w - 20, None)),
-        )
-        compat_scroll.add_widget(self._compat_label)
-        compat_card.add_widget(compat_scroll)
-        self.add_widget(compat_card)
+            texture_size=lambda inst, sz: setattr(inst, 'height', max(sz[1], dp(80))),
+            width=lambda inst, w: setattr(inst, 'text_size', (w - dp(20), None)))
+        cscrl.add_widget(self._compat_label)
+        ccard.add_widget(cscrl); self._inner.add_widget(ccard)
 
     def _add_log(self, line):
         self._log_lines.append(line)
         self._console_label.text = '\n'.join(self._log_lines)
 
     def _clear_log(self):
-        self._log_lines.clear()
-        self._console_label.text = ''
+        self._log_lines.clear(); self._console_label.text = ''
 
     def _generate_demo_data(self):
-        if self._is_training:
-            return
+        if self._is_training: return
         self._clear_log()
         self._add_log('>>> GENERATING SYNTHETIC EEG DATASET...')
-        self._add_log('>>> Simulating 12-feature band power vectors...')
         ev = Clock.schedule_once(lambda dt: self._finish_demo(), 1.0)
         self._scheduled_events.append(ev)
 
     def _finish_demo(self):
         self._add_log('>>> SUCCESS. Generated 1440 samples (480 per class).')
-        self._add_log('>>> Features: delta, theta, alpha, beta, gamma power,')
-        self._add_log('    focus_index, stress_index, alpha_theta_ratio,')
-        self._add_log('    beta_alpha_ratio, delta_alpha_ratio,')
-        self._add_log('    spectral_entropy, mean_power')
+        self._add_log('>>> Features: 11-feature vector (5 bands + 6 ratios/combos)')
         self._add_log('>>> You can now EXECUTE TRAINING PIPELINE.')
 
     def _start_training(self):
-        if self._is_training:
-            return
+        if self._is_training: return
         self._is_training = True
-        self._train_btn.text = 'TRAINING...'
-        self._train_btn.disabled = True
-        self._demo_btn.disabled = True
-        self._compat_btn.disabled = True
-
+        self._train_btn.text = 'TRAINING...'; self._train_btn.disabled = True
+        self._demo_btn.disabled = True; self._compat_btn.disabled = True
         self._clear_log()
         self._add_log('>>> INITIATING RANDOM FOREST TRAINING PIPELINE...')
         self._simulate_training()
 
     def _simulate_training(self):
-        """Simulate the 9-step Random Forest training pipeline."""
         self._unschedule_all()
-
         steps = [
-            # Step 1 (0.2s)
-            (0.2, [
-                '[INFO] Loading calibration session data...',
-                '[INFO] Found 3 classes: Calm, Stressed, Focused',
-            ]),
-            # Step 2 (0.5s)
-            (0.5, [
-                '[INFO] Feature extraction complete.',
-                '[INFO] Samples: Calm=480  Stressed=480  Focused=480',
-                '[INFO] Feature vector size: 12 features per sample',
-                '[INFO] Total dataset: 1440 samples',
-            ]),
-            # Step 3 (0.9s)
-            (0.9, [
-                '[INFO] Applying StandardScaler normalization...',
-                '[INFO] Mean per feature: [0.82, 1.14, 2.31, ...]',
-                '[INFO] Std  per feature: [0.21, 0.33, 0.58, ...]',
-            ]),
-            # Step 4 (1.3s)
-            (1.3, [
-                '[INFO] Splitting dataset: 80% train / 20% test',
-                '[INFO] Train: 1152 samples | Test: 288 samples',
-                '[INFO] Stratified split \u2014 class balance preserved',
-            ]),
-            # Step 5 (1.8s)
-            (1.8, [
-                '[INFO] Running 5-fold cross-validation...',
-                '[INFO] Fold 1/5 \u2014 CV Accuracy: 87.3%',
-                '[INFO] Fold 2/5 \u2014 CV Accuracy: 89.1%',
-                '[INFO] Fold 3/5 \u2014 CV Accuracy: 86.8%',
-                '[INFO] Fold 4/5 \u2014 CV Accuracy: 90.2%',
-                '[INFO] Fold 5/5 \u2014 CV Accuracy: 88.6%',
-                '[INFO] Mean CV Accuracy: 88.4% \u00b1 1.2%',
-            ]),
-            # Step 6 (2.5s)
-            (2.5, [
-                '[INFO] Training RandomForestClassifier...',
-                '[INFO] n_estimators=200  max_depth=None',
-                '[INFO] min_samples_split=2  n_jobs=-1',
-                '[INFO] Building tree   1/200...',
-                '[INFO] Building tree  50/200...',
-                '[INFO] Building tree 100/200...',
-                '[INFO] Building tree 150/200...',
-                '[INFO] Building tree 200/200...',
-            ]),
-            # Step 7 (3.5s)
-            (3.5, [
-                '[INFO] Training complete.',
-                '[INFO] OOB Score: 91.2%',
-                '[INFO] Test Accuracy: 90.6%',
-                '[INFO] ',
-                '[INFO] Classification Report:',
-                '[INFO]              precision  recall  f1-score',
-                '[INFO] Calm           0.93      0.91    0.92',
-                '[INFO] Stressed       0.89      0.90    0.89',
-                '[INFO] Focused        0.92      0.93    0.92',
-            ]),
-            # Step 8 (4.2s)
-            (4.2, [
-                '[INFO] Feature Importances (top 5):',
-                '[INFO] 1. focus_index        0.187',
-                '[INFO] 2. alpha_power        0.163',
-                '[INFO] 3. stress_index       0.141',
-                '[INFO] 4. beta_power         0.128',
-                '[INFO] 5. spectral_entropy   0.097',
-            ]),
-            # Step 9 (4.8s)
-            (4.8, [
-                '[INFO] Saving model to user profile...',
-                '[INFO] Model size: 2.3 MB',
-                '[SUCCESS] Random Forest model saved. \u2713',
-                '[SUCCESS] User profile updated. \u2713',
-                '[SUCCESS] Ready for live classification. \u2713',
-            ]),
+            (0.2, ['[INFO] Loading calibration session data...',
+                   '[INFO] Found 3 classes: Calm, Stressed, Focused']),
+            (0.5, ['[INFO] Feature extraction complete.',
+                   '[INFO] Samples: Calm=480  Stressed=480  Focused=480',
+                   '[INFO] Feature vector size: 11 features per sample',
+                   '[INFO] Total dataset: 1440 samples']),
+            (0.9, ['[INFO] Applying StandardScaler normalization...',
+                   '[INFO] Mean per feature: [0.82, 1.14, 2.31, ...]']),
+            (1.3, ['[INFO] Splitting dataset: 80% train / 20% test',
+                   '[INFO] Stratified split — class balance preserved']),
+            (1.8, ['[INFO] Running 5-fold cross-validation...',
+                   '[INFO] Mean CV Accuracy: 88.4% ± 1.2%']),
+            (2.5, ['[INFO] Training RandomForestClassifier...',
+                   '[INFO] n_estimators=200  max_depth=20  n_jobs=1',
+                   '[INFO] Building trees...']),
+            (3.5, ['[INFO] Training complete.',
+                   '[INFO] OOB Score: 91.2%',
+                   '[INFO] Test Accuracy: 90.6%']),
+            (4.2, ['[INFO] Feature Importances (top 5):',
+                   '[INFO] 1. alpha_theta_ratio  0.187',
+                   '[INFO] 2. alpha_power        0.163',
+                   '[INFO] 3. beta_alpha_ratio   0.141',
+                   '[INFO] 4. beta_power         0.128',
+                   '[INFO] 5. gamma_beta_ratio   0.097']),
+            (4.8, ['[INFO] Saving model to user profile...',
+                   '[SUCCESS] Random Forest model saved. ✓',
+                   '[SUCCESS] Ready for live classification. ✓']),
         ]
-
         for delay, lines in steps:
-            ev = Clock.schedule_once(
-                lambda dt, msgs=lines: self._add_log_batch(msgs),
-                delay,
-            )
+            ev = Clock.schedule_once(lambda dt, msgs=lines: self._add_log_batch(msgs), delay)
             self._scheduled_events.append(ev)
-
-        # Re-enable buttons after all steps
         ev = Clock.schedule_once(lambda dt: self._finish_training(), 5.3)
         self._scheduled_events.append(ev)
 
     def _add_log_batch(self, lines):
-        for line in lines:
-            self._add_log(line)
+        for l in lines: self._add_log(l)
 
     def _finish_training(self):
         self._is_training = False
-        self._train_btn.text = 'EXECUTE TRAINING PIPELINE'
-        self._train_btn.disabled = False
-        self._demo_btn.disabled = False
-        self._compat_btn.disabled = False
-
-    # ──────────────────────────────────────────────────────────
-    # Compatibility Check
-    # ──────────────────────────────────────────────────────────
+        self._train_btn.text = 'EXECUTE TRAINING PIPELINE'; self._train_btn.disabled = False
+        self._demo_btn.disabled = False; self._compat_btn.disabled = False
 
     def _run_compat_check(self):
-        """Run the compatibility diagnostic in a background-friendly way."""
-        if self._is_training or self._is_checking:
-            return
-
+        if self._is_training or self._is_checking: return
         self._is_checking = True
-        self._compat_btn.text = 'RUNNING...'
-        self._compat_btn.disabled = True
-        self._train_btn.disabled = True
-        self._demo_btn.disabled = True
+        self._compat_btn.text = 'RUNNING...'; self._compat_btn.disabled = True
+        self._train_btn.disabled = True; self._demo_btn.disabled = True
         self._compat_label.text = 'Running diagnostic...\n'
-
-        # Schedule the actual work for the next frame so the UI updates first
         Clock.schedule_once(lambda dt: self._do_compat_check(), 0.1)
 
     def _do_compat_check(self):
-        """Execute the actual compatibility check."""
-        try:
-            output = run_compatibility_check()
+        try: out = run_compatibility_check()
         except Exception as e:
-            import traceback
-            output = f'ERROR running compatibility check:\n{traceback.format_exc()}'
-
-        self._compat_label.text = output
+            out = f'ERROR:\n{traceback.format_exc()}'
+        self._compat_label.text = out
         self._is_checking = False
-        self._compat_btn.text = 'RUN COMPATIBILITY CHECK'
-        self._compat_btn.disabled = False
-        self._train_btn.disabled = False
-        self._demo_btn.disabled = False
+        self._compat_btn.text = 'RUN COMPATIBILITY CHECK'; self._compat_btn.disabled = False
+        self._train_btn.disabled = False; self._demo_btn.disabled = False
 
     def _unschedule_all(self):
-        for ev in self._scheduled_events:
-            ev.cancel()
+        for ev in self._scheduled_events: ev.cancel()
         self._scheduled_events.clear()
 
-    def cleanup(self):
-        """Cleanup scheduled events."""
-        self._unschedule_all()
+    def cleanup(self): self._unschedule_all()
 
 
 # ============================================================
-# File: screens/monitoring_screen.py
+# MonitoringScreen
 # ============================================================
-
-"""
-Monitoring screen matching Flutter's MonitoringScreen.
-Live EEG monitoring with Neuro-Game (mind visualizer) and Technical Data tabs.
-"""
-from kivy.uix.boxlayout import BoxLayout
-from kivy.uix.label import Label
-from kivy.uix.togglebutton import ToggleButton
-from kivy.graphics import Color, RoundedRectangle, Rectangle
-from kivy.clock import Clock
-
-
-class MonitoringScreen(BoxLayout):
-    """Live monitoring with tab-like view: Neuro-Game and Technical Data."""
-
+class MonitoringScreen(ScrollView):
     def __init__(self, app_state, **kwargs):
-        super().__init__(orientation='vertical', padding=20, spacing=15, **kwargs)
-        self._app_state = app_state
-        self._is_monitoring = False
-        self._state_label = 'IDLE'
-        self._confidence = 0.0
-        self._showing_game = True
+        super().__init__(do_scroll_x=False, do_scroll_y=True, **kwargs)
+        self._app_state = app_state; self._is_monitoring = False
+        self._state_label = 'IDLE'; self._confidence = 0.0; self._showing_game = True
 
-        # Tab bar
-        tab_row = BoxLayout(size_hint_y=None, height=45, spacing=5)
+        self._inner = BoxLayout(
+            orientation='vertical',
+            padding=[dp(16), dp(16), dp(16), dp(16)],
+            spacing=dp(12),
+            size_hint_y=None)
+        self._inner.bind(minimum_height=self._inner.setter('height'))
+        self.add_widget(self._inner)
+
+        tab_row = BoxLayout(size_hint_y=None, height=dp(45), spacing=dp(5))
         with tab_row.canvas.before:
             Color(*theme.BG_DARK)
-            tab_row._bg = RoundedRectangle(
-                pos=tab_row.pos, size=tab_row.size, radius=[8]
-            )
-        tab_row.bind(
-            pos=lambda inst, val: setattr(inst._bg, 'pos', val),
-            size=lambda inst, val: setattr(inst._bg, 'size', val),
-        )
-
-        self._tab_game = ToggleButton(
-            text='NEURO-GAME',
-            group='monitor_tab',
-            state='down',
-            font_size=theme.font(theme.FONT_BODY_REGULAR),
-            color=theme.GOLD,
-        )
+            tab_row._bg = RoundedRectangle(pos=tab_row.pos, size=tab_row.size, radius=[dp(8)])
+        tab_row.bind(pos=lambda inst, v: setattr(inst._bg, 'pos', v),
+                     size=lambda inst, v: setattr(inst._bg, 'size', v))
+        self._tab_game = ToggleButton(text='NEURO-GAME', group='mt', state='down',
+            font_size=theme.font(theme.FONT_BODY_REGULAR), color=theme.GOLD)
         self._tab_game.bind(on_press=lambda *a: self._switch_tab(True))
-
-        self._tab_tech = ToggleButton(
-            text='TECHNICAL DATA',
-            group='monitor_tab',
-            state='normal',
-            font_size=theme.font(theme.FONT_BODY_REGULAR),
-            color=theme.TEXT_MUTED,
-        )
+        self._tab_tech = ToggleButton(text='TECHNICAL DATA', group='mt', state='normal',
+            font_size=theme.font(theme.FONT_BODY_REGULAR), color=theme.TEXT_MUTED)
         self._tab_tech.bind(on_press=lambda *a: self._switch_tab(False))
+        tab_row.add_widget(self._tab_game); tab_row.add_widget(self._tab_tech)
+        self._inner.add_widget(tab_row)
 
-        tab_row.add_widget(self._tab_game)
-        tab_row.add_widget(self._tab_tech)
-        self.add_widget(tab_row)
-
-        # Content area
-        self._content_area = BoxLayout()
-        self.add_widget(self._content_area)
-
-        # Build both views
-        self._game_view = self._build_game_view()
+        self._content_area = BoxLayout(size_hint_y=None, height=dp(400))
+        self._inner.add_widget(self._content_area)
+        self._game_view = MindVisualizer(is_active=False, state_label='IDLE')
         self._tech_view = self._build_tech_view()
-
-        # Show game view by default
         self._content_area.add_widget(self._game_view)
 
-        # Control button
-        self._control_btn = ShadowButton(
-            text='INITIATE LIVE STREAM',
-            font_size=theme.font(theme.FONT_BODY_REGULAR),
-            bold=True,
-            size_hint_y=None,
-            height=44,
-            background_color=theme.BUTTON_BG,
-            color=theme.GOLD,
-        )
+        self._control_btn = ShadowButton(text='INITIATE LIVE STREAM',
+            font_size=theme.font(theme.FONT_BODY_REGULAR), bold=True,
+            size_hint_y=None, height=dp(44),
+            background_color=theme.BUTTON_BG, color=theme.GOLD)
         self._control_btn.bind(on_press=lambda *a: self._toggle_monitoring())
-        self.add_widget(self._control_btn)
-
-    def _build_game_view(self):
-        view = MindVisualizer(
-            is_active=False,
-            state_label='IDLE',
-        )
-        return view
+        self._inner.add_widget(self._control_btn)
 
     def _build_tech_view(self):
-        view = BoxLayout(orientation='vertical', spacing=10)
-        view.size_hint_y = None
-        view.bind(minimum_height=view.setter('height'))
-
-        # State display
-        state_box = GradientCard(
-            size_hint_y=None,
-            height=120,
-            padding=[20, 20]
-        )
-
-        self._state_display = Label(
-            text='IDLE',
+        view = BoxLayout(orientation='vertical', spacing=dp(10),
+                         size_hint_y=None, height=dp(400))
+        sb = GradientCard(size_hint_y=None, height=dp(100), padding=[dp(20), dp(10)])
+        self._state_display = Label(text='IDLE',
             font_size=theme.font(theme.FONT_DISPLAY_LARGE),
-            bold=True,
-            color=theme.TEXT_MUTED,
-        )
-        state_box.add_widget(self._state_display)
-
-        conf_row = BoxLayout(size_hint_y=None, height=20)
-        self._conf_lbl = Label(
-            text='CONF: 0%',
-            font_size=theme.font(theme.FONT_BODY_SMALL),
-            color=theme.TEXT_MUTED,
-        )
-        ver_lbl = Label(
-            text='VER: ---',
-            font_size=theme.font(theme.FONT_BODY_SMALL),
-            color=theme.TEXT_MUTED,
-        )
-        conf_row.add_widget(self._conf_lbl)
-        conf_row.add_widget(ver_lbl)
-        state_box.add_widget(conf_row)
-        view.add_widget(state_box)
-
-        # EEG Graph
-        self._tech_eeg = EegGraph()
+            bold=True, color=theme.TEXT_MUTED)
+        sb.add_widget(self._state_display)
+        cr = BoxLayout(size_hint_y=None, height=dp(20))
+        self._conf_lbl = Label(text='CONF: 0%',
+            font_size=theme.font(theme.FONT_BODY_SMALL), color=theme.TEXT_MUTED)
+        cr.add_widget(self._conf_lbl)
+        cr.add_widget(Label(text='VER: ---',
+            font_size=theme.font(theme.FONT_BODY_SMALL), color=theme.TEXT_MUTED))
+        sb.add_widget(cr); view.add_widget(sb)
+        self._tech_eeg = EegGraph(size_hint_y=None, height=dp(140))
         view.add_widget(self._tech_eeg)
-
-        # Band power bars
-        self._band_bars = BandPowerBars(size_hint_y=None, height=160)
+        self._band_bars = BandPowerBars(size_hint_y=None, height=dp(140))
         view.add_widget(self._band_bars)
-
         return view
 
     def _switch_tab(self, show_game):
-        if self._showing_game == show_game:
-            return
+        if self._showing_game == show_game: return
         self._showing_game = show_game
         self._content_area.clear_widgets()
-        if show_game:
-            self._content_area.add_widget(self._game_view)
-        else:
-            self._content_area.add_widget(self._tech_view)
+        self._content_area.add_widget(self._game_view if show_game else self._tech_view)
 
     def _toggle_monitoring(self):
         self._is_monitoring = not self._is_monitoring
         self._game_view.is_active = self._is_monitoring
-
         if self._is_monitoring:
-            self._control_btn.text = 'TERMINATE STREAM'
-            self._control_btn.color = theme.RED
-            self._control_btn.background_color = theme.DANGER_BUTTON_BG
+            self._control_btn.text     = 'TERMINATE STREAM'
+            self._control_btn.color    = theme.RED
+            self._control_btn.bg_color = theme.DANGER_BUTTON_BG
         else:
-            self._control_btn.text = 'INITIATE LIVE STREAM'
-            self._control_btn.color = theme.GOLD
-            self._control_btn.background_color = theme.BUTTON_BG
-            self._state_label = 'IDLE'
-            self._confidence = 0.0
-            self._state_display.text = 'IDLE'
-            self._state_display.color = theme.TEXT_MUTED
-            self._conf_lbl.text = 'CONF: 0%'
+            self._control_btn.text     = 'INITIATE LIVE STREAM'
+            self._control_btn.color    = theme.GOLD
+            self._control_btn.bg_color = theme.BUTTON_BG
+            self._state_display.text   = 'IDLE'
+            self._state_display.color  = theme.TEXT_MUTED
+            self._conf_lbl.text        = 'CONF: 0%'
+            if hasattr(self._game_view, 'cleanup'):
+                self._game_view.cleanup()
 
 
 # ============================================================
-# File: screens/login_screen.py
+# LoginScreen
 # ============================================================
-
-"""
-Login screen with previous user quick-select tiles and new user input.
-"""
-import re
-from kivy.uix.boxlayout import BoxLayout
-from kivy.uix.floatlayout import FloatLayout
-from kivy.uix.scrollview import ScrollView
-from kivy.uix.label import Label
-from kivy.uix.textinput import TextInput
-from kivy.uix.widget import Widget
-from kivy.uix.behaviors import ButtonBehavior
-from kivy.graphics import Color, RoundedRectangle, Rectangle, Ellipse
-from kivy.metrics import dp, sp
-
-
-# Avatar color palette for user tiles
-_AVATAR_COLORS = [
-    '#2563eb', '#16a34a', '#ea0c0c',
-    '#f59e0b', '#7c3aed', '#db2777',
-]
+_AVATAR_COLORS = ['#2563eb', '#16a34a', '#ea0c0c', '#f59e0b', '#7c3aed', '#db2777']
 
 
 class UserTile(ButtonBehavior, Widget):
-    """Clickable user avatar tile for quick login."""
-
     def __init__(self, username, on_select=None, **kwargs):
-        self.username = username
+        self.username  = username
         self._on_select = on_select
         kwargs['size_hint'] = (None, None)
-        kwargs['size'] = (dp(80), dp(90))
+        kwargs['size']      = (dp(80), dp(90))
         super().__init__(**kwargs)
         self._pressed = False
-
         self.bind(pos=self._update_canvas, size=self._update_canvas)
-        self._draw()
+        self._update_canvas()
 
     def _get_avatar_color(self):
-        idx = hash(self.username) % len(_AVATAR_COLORS)
-        return theme.rgba_hex(_AVATAR_COLORS[idx], 1.0)
+        return theme.rgba_hex(_AVATAR_COLORS[hash(self.username) % len(_AVATAR_COLORS)])
 
-    def _draw(self):
-        self._update_canvas()
-
-    def _update_canvas(self, *args):
-        self.canvas.before.clear()
-        self.canvas.after.clear()
-
+    def _update_canvas(self, *a):
+        self.canvas.before.clear(); self.clear_widgets()
         with self.canvas.before:
-            # Background rounded rect
-            if self._pressed:
-                Color(*theme.rgba_hex('#2563eb', 0.4))
-            else:
-                Color(*theme.rgba_hex('#1a2535', 1.0))
-            RoundedRectangle(
-                pos=self.pos,
-                size=self.size,
-                radius=[12, 12, 12, 12],
-            )
+            Color(*(theme.rgba_hex('#2563eb', 0.4) if self._pressed
+                    else theme.rgba_hex('#1a2535', 1.0)))
+            RoundedRectangle(pos=self.pos, size=self.size, radius=[dp(12)] * 4)
+            Color(*self._get_avatar_color())
+            ad = dp(44); ax = self.x + (self.width - ad) / 2; ay = self.y + self.height - ad - dp(8)
+            Ellipse(pos=(ax, ay), size=(ad, ad))
+        ltr = Label(text=(self.username[0].upper() if self.username else '?'),
+            font_size=sp(20), bold=True, color=(1, 1, 1, 1),
+            size_hint=(None, None), size=(dp(44), dp(44)),
+            pos=(self.x + (self.width - dp(44)) / 2, self.y + self.height - dp(44) - dp(8)),
+            halign='center', valign='middle')
+        ltr.bind(size=ltr.setter('text_size')); self.add_widget(ltr)
+        dn = self.username[:9] + '\u2026' if len(self.username) > 9 else self.username
+        nl = Label(text=dn, font_size=sp(11),
+            color=theme.rgba_hex('#cbd5e1'),
+            size_hint=(None, None), size=(self.width, dp(16)),
+            pos=(self.x, self.y + dp(4)), halign='center', valign='middle')
+        nl.bind(size=nl.setter('text_size')); self.add_widget(nl)
 
-            # Avatar circle
-            avatar_color = self._get_avatar_color()
-            Color(*avatar_color)
-            avatar_d = dp(44)
-            avatar_x = self.x + (self.width - avatar_d) / 2
-            avatar_y = self.y + self.height - avatar_d - dp(8)
-            Ellipse(
-                pos=(avatar_x, avatar_y),
-                size=(avatar_d, avatar_d),
-            )
-
-        with self.canvas.after:
-            pass  # Labels added as children below
-
-        # Remove old children labels
-        self.clear_widgets()
-
-        # Initial letter label (centered on avatar)
-        letter = self.username[0].upper() if self.username else '?'
-        avatar_d = dp(44)
-        avatar_x = self.x + (self.width - avatar_d) / 2
-        avatar_y = self.y + self.height - avatar_d - dp(8)
-
-        initial_lbl = Label(
-            text=letter,
-            font_size=sp(20),
-            bold=True,
-            color=(1, 1, 1, 1),
-            size_hint=(None, None),
-            size=(avatar_d, avatar_d),
-            pos=(avatar_x, avatar_y),
-            halign='center',
-            valign='middle',
-        )
-        initial_lbl.bind(size=initial_lbl.setter('text_size'))
-        self.add_widget(initial_lbl)
-
-        # Username label below avatar
-        display_name = self.username
-        if len(display_name) > 9:
-            display_name = display_name[:9] + '\u2026'
-
-        name_lbl = Label(
-            text=display_name,
-            font_size=sp(11),
-            color=theme.rgba_hex('#cbd5e1', 1.0),
-            size_hint=(None, None),
-            size=(self.width, dp(16)),
-            pos=(self.x, self.y + dp(4)),
-            halign='center',
-            valign='middle',
-        )
-        name_lbl.bind(size=name_lbl.setter('text_size'))
-        self.add_widget(name_lbl)
-
-    def on_press(self):
-        self._pressed = True
-        self._update_canvas()
+    def on_press(self): self._pressed = True; self._update_canvas()
 
     def on_release(self):
-        self._pressed = False
-        self._update_canvas()
-        if self._on_select:
-            self._on_select(self.username)
+        self._pressed = False; self._update_canvas()
+        if self._on_select: self._on_select(self.username)
 
 
 class LoginScreen(FloatLayout):
-    """Login screen with previous user tiles and username input."""
-
     def __init__(self, app_state, on_login=None, **kwargs):
         super().__init__(**kwargs)
-        self._app_state = app_state
-        self._on_login = on_login
-        self._error = None
-
-        # Background
+        self._app_state = app_state; self._on_login = on_login
         with self.canvas.before:
             Color(*theme.BG_DARK)
             self._bg = Rectangle(pos=self.pos, size=self.size)
-        self.bind(pos=self._update_bg, size=self._update_bg)
+        self.bind(pos=self._upd_bg, size=self._upd_bg)
 
-        # Check for existing users
-        saved_users = app_state.get_sorted_users()
-        has_users = len(saved_users) > 0
+        saved = app_state.get_sorted_users(); hu = len(saved) > 0
+        card_h = dp(560) if hu else dp(420)
 
-        # Calculate card height based on whether we have users
-        card_height = 540 if has_users else 420
+        card = GradientCard(padding=[dp(24), dp(24)],
+            size_hint=(0.95, None), height=card_h,
+            pos_hint={'center_x': 0.5, 'center_y': 0.5})
 
-        # Center card container
-        card = GradientCard(
-            padding=[30, 30],
-            size_hint=(None, None),
-            size=(400, card_height),
-            pos_hint={'center_x': 0.5, 'center_y': 0.5},
-        )
-
-        # Title
-        title = Label(
-            text="NEUROMENTOR",
+        tl = Label(text='NEUROMENTOR',
             font_size=theme.font(theme.FONT_TITLE_MEDIUM),
-            size_hint_x=1,
-            size_hint_y=None,
-            height=sp(50),
-            halign='center',
-            valign='middle'
-        )
-        # disables wrapping
-        card.add_widget(title)
-        # Subtitle
-        subtitle = Label(
-            text='Multi-User Brain Computer Interface System',
+            bold=True, color=theme.GOLD,
+            size_hint_y=None, height=sp(46), halign='center', valign='middle')
+        tl.text_size = (None, None); card.add_widget(tl)
+
+        sl = Label(text='Multi-User Brain Computer Interface System',
             font_size=theme.font(theme.FONT_BODY_SMALL),
-            color=theme.TEXT_MUTED,
-            italic=True,
-            size_hint_y=None,
-            height=25,
-        )
-        card.add_widget(subtitle)
+            color=theme.TEXT_MUTED, italic=True,
+            size_hint_y=None, halign='center', valign='middle')
+        sl.bind(texture_size=lambda inst, sz: setattr(inst, 'height', max(sz[1], dp(22))))
+        card.add_widget(sl)
+        card.add_widget(Label(size_hint_y=None, height=dp(10)))
 
-        # Spacer
-        card.add_widget(Label(size_hint_y=None, height=12))
-
-        # ============================================================
-        # PREVIOUS USERS SECTION
-        # ============================================================
-        if has_users:
-            # Section label
-            prev_label = Label(
-                text='PREVIOUS USERS',
+        if hu:
+            pl = Label(text='PREVIOUS USERS',
                 font_size=theme.font(theme.FONT_HEADING_LARGE),
-                bold=True,
-                color=theme.TEXT_PRIMARY,
-                size_hint_y=None,
-                height=28,
-                halign='left',
-                valign='middle',
-            )
-            prev_label.bind(size=prev_label.setter('text_size'))
-            card.add_widget(prev_label)
-
-            # Spacer
-            card.add_widget(Label(size_hint_y=None, height=8))
-
-            # Horizontal scroll of user tiles
-            tile_scroll = ScrollView(
-                size_hint_y=None,
-                height=dp(95),
-                do_scroll_x=True,
-                do_scroll_y=False,
-            )
-            tile_row = BoxLayout(
-                orientation='horizontal',
-                spacing=12,
-                size_hint_x=None,
-            )
-            tile_row.bind(minimum_width=tile_row.setter('width'))
-
-            for user in saved_users:
-                tile = UserTile(
-                    username=user.username,
-                    on_select=self._quick_login,
-                )
-                tile_row.add_widget(tile)
-
-            tile_scroll.add_widget(tile_row)
-            card.add_widget(tile_scroll)
-
-            # Spacer
-            card.add_widget(Label(size_hint_y=None, height=8))
-
-            # Divider line
-            divider = Widget(size_hint_y=None, height=dp(1))
-            with divider.canvas:
-                Color(*theme.rgba_hex('#334155', 1.0))
-                divider._line = Rectangle(pos=divider.pos, size=divider.size)
-            divider.bind(
-                pos=lambda inst, val: setattr(inst._line, 'pos', val),
-                size=lambda inst, val: setattr(inst._line, 'size', val),
-            )
-            card.add_widget(divider)
-
-            # "OR SIGN IN AS NEW USER" label
-            or_label = Label(
-                text='OR SIGN IN AS NEW USER',
-                font_size=sp(11),
-                color=theme.rgba_hex('#64748b', 1.0),
-                size_hint_y=None,
-                height=24,
-                halign='center',
-                valign='middle',
-            )
-            or_label.bind(size=or_label.setter('text_size'))
-            card.add_widget(or_label)
+                bold=True, color=theme.TEXT_PRIMARY,
+                size_hint_y=None, halign='left', valign='middle')
+            pl.bind(size=pl.setter('text_size'),
+                    texture_size=lambda inst, sz: setattr(inst, 'height', max(sz[1], dp(24))))
+            card.add_widget(pl)
+            card.add_widget(Label(size_hint_y=None, height=dp(6)))
+            ts = ScrollView(size_hint_y=None, height=dp(95),
+                            do_scroll_x=True, do_scroll_y=False)
+            tr = BoxLayout(orientation='horizontal', spacing=dp(12), size_hint_x=None)
+            tr.bind(minimum_width=tr.setter('width'))
+            for u in saved:
+                tr.add_widget(UserTile(username=u.username, on_select=self._quick_login))
+            ts.add_widget(tr); card.add_widget(ts)
+            card.add_widget(Label(size_hint_y=None, height=dp(8)))
+            div = Widget(size_hint_y=None, height=dp(1))
+            with div.canvas:
+                Color(*theme.rgba_hex('#334155')); div._l = Rectangle(pos=div.pos, size=div.size)
+            div.bind(pos=lambda inst, v: setattr(inst._l, 'pos', v),
+                     size=lambda inst, v: setattr(inst._l, 'size', v))
+            card.add_widget(div)
+            ol = Label(text='OR SIGN IN AS NEW USER', font_size=sp(11),
+                color=theme.rgba_hex('#64748b'), size_hint_y=None,
+                height=dp(24), halign='center', valign='middle')
+            ol.bind(size=ol.setter('text_size')); card.add_widget(ol)
         else:
-            # Info text when no previous users
-            info = Label(
-                text='Enter your username to login or create a new profile.\n'
-                     'Each user has isolated data and trained models.',
+            il = Label(text='Enter your username to login or create a new profile.',
                 font_size=theme.font(theme.FONT_BODY_SMALL),
-                color=theme.TEXT_SECONDARY,
-                halign='center',
-                valign='middle',
-                size_hint_y=None,
-                height=50,
-            )
-            info.bind(size=info.setter('text_size'))
-            card.add_widget(info)
+                color=theme.TEXT_SECONDARY, halign='center', valign='middle',
+                size_hint_y=None)
+            il.bind(texture_size=lambda inst, sz: setattr(inst, 'height', max(sz[1], dp(40))))
+            card.add_widget(il)
 
-        # ============================================================
-        # NEW USER INPUT SECTION
-        # ============================================================
+        ul = Label(text='USERNAME', font_size=theme.font(theme.FONT_BODY_SMALL),
+            color=theme.GOLD, bold=True, size_hint_y=None, halign='left', valign='middle')
+        ul.bind(texture_size=lambda inst, sz: setattr(inst, 'height', max(sz[1], dp(18))))
+        card.add_widget(ul)
 
-        # Username label
-        usr_label = Label(
-            text='USERNAME',
-            font_size=theme.font(theme.FONT_BODY_SMALL),
-            color=theme.GOLD,
-            bold=True,
-            size_hint_y=None,
-            height=20,
-            halign='left',
-            valign='middle',
-        )
-        usr_label.bind(size=usr_label.setter('text_size'))
-        card.add_widget(usr_label)
-
-        # Username input
-        self._username_input = TextInput(
-            hint_text='Enter your username',
+        self._username_input = TextInput(hint_text='Enter your username',
             font_size=theme.font(theme.FONT_BODY_REGULAR),
-            multiline=False,
-            halign='left',
-            size_hint_x=1,
-            size_hint_y=None,
-            height=40,
-            background_color=theme.INPUT_BG,
-            foreground_color=theme.TEXT_PRIMARY,
-            hint_text_color=theme.TEXT_MUTED,
-            cursor_color=theme.TEAL,
-            padding=[10, 10],
-        )
+            multiline=False, size_hint_y=None, height=dp(44),
+            background_color=theme.INPUT_BG, foreground_color=theme.TEXT_PRIMARY,
+            hint_text_color=theme.TEXT_MUTED, cursor_color=theme.TEAL,
+            padding=[dp(12), dp(10)])
         self._username_input.bind(on_text_validate=lambda *a: self._login())
         card.add_widget(self._username_input)
 
-        # Error label
-        self._error_lbl = Label(
-            text='',
-            font_size=theme.font(theme.FONT_BODY_SMALL),
-            color=theme.RED,
-            size_hint_y=None,
-            height=20,
-            halign='left',
-            valign='middle',
-        )
-        self._error_lbl.bind(size=self._error_lbl.setter('text_size'))
+        self._error_lbl = Label(text='',
+            font_size=theme.font(theme.FONT_BODY_SMALL), color=theme.RED,
+            size_hint_y=None, halign='left', valign='middle')
+        self._error_lbl.bind(texture_size=lambda inst, sz: setattr(inst, 'height', max(sz[1], dp(16))))
         card.add_widget(self._error_lbl)
 
-        # Login button
-        login_btn = ShadowButton(
-            text='ENTER SYSTEM',
-            font_size=theme.font(theme.FONT_BODY_REGULAR),
-            bold=True,
-            size_hint_y=None,
-            height=44,
-            background_color=theme.GOLD,
-            color=(0, 0, 0, 1),
-        )
-        login_btn.bind(on_press=lambda *a: self._login())
-        card.add_widget(login_btn)
-
+        lb = ShadowButton(text='ENTER SYSTEM',
+            font_size=theme.font(theme.FONT_BODY_REGULAR), bold=True,
+            size_hint_y=None, height=dp(44),
+            background_color=theme.GOLD, color=(0, 0, 0, 1))
+        lb.bind(on_press=lambda *a: self._login())
+        card.add_widget(lb)
         self.add_widget(card)
 
-    def _update_bg(self, *args):
-        self._bg.pos = self.pos
-        self._bg.size = self.size
+    def _upd_bg(self, *a): self._bg.pos = self.pos; self._bg.size = self.size
 
     def _quick_login(self, username):
-        """Login via user tile tap."""
         self._app_state.login(username)
-        if self._on_login:
-            self._on_login()
+        if self._on_login: self._on_login()
 
     def _login(self):
-        username = self._username_input.text.strip()
-
-        if not username:
-            self._error_lbl.text = 'Username cannot be empty'
-            return
-
-        if not re.match(r'^[a-zA-Z0-9_]+$', username):
-            self._error_lbl.text = 'Username: letters, numbers, underscores only'
-            return
-
+        u = self._username_input.text.strip()
+        if not u: self._error_lbl.text = 'Username cannot be empty'; return
+        if not re.match(r'^[a-zA-Z0-9_]+$', u):
+            self._error_lbl.text = 'Letters, numbers, underscores only'; return
         self._error_lbl.text = ''
-        self._app_state.login(username)
-        if self._on_login:
-            self._on_login()
+        self._app_state.login(u)
+        if self._on_login: self._on_login()
 
 
 # ============================================================
-# File: screens/main_shell.py
+# Page registry
 # ============================================================
-
-"""
-Main shell with collapsible sidebar navigation.
-Matches Flutter's MainShell with animated sidebar overlay.
-"""
-from kivy.uix.floatlayout import FloatLayout
-from kivy.uix.boxlayout import BoxLayout
-from kivy.uix.relativelayout import RelativeLayout
-from kivy.uix.label import Label
-from kivy.uix.widget import Widget
-from kivy.uix.popup import Popup
-from kivy.graphics import Color, Rectangle, RoundedRectangle
-from kivy.animation import Animation
-from kivy.properties import BooleanProperty, NumericProperty
-from kivy.clock import Clock
+PAGE_NAMES = [
+    'DASHBOARD',
+    'PROFILE',
+    'CALIBRATE',
+    'RANDOM FOREST',
+    'LIVE FEED',
+    'VOICE ASSISTANT',
+    'PHASE 2 INSIGHTS',
+]
+SIDEBAR_WIDTH = dp(240)
 
 
-PAGE_NAMES = ['DASHBOARD', 'PROFILE', 'CALIBRATE', 'RANDOM FOREST', 'LIVE FEED']
-SIDEBAR_WIDTH = 240
-
-
+# ============================================================
+# MainShell
+# ============================================================
 class MainShell(FloatLayout):
-    """Main app shell with top bar, sidebar overlay, and screen switching."""
-
     sidebar_open = BooleanProperty(False)
 
     def __init__(self, app_state, on_logout=None, **kwargs):
         super().__init__(**kwargs)
-        self._app_state = app_state
-        self._on_logout = on_logout
-        self._screens = {}
-        self._current_screen = None
-
-        # Background
+        self._app_state = app_state; self._on_logout = on_logout
+        self._screens = {}; self._current_screen = None
         with self.canvas.before:
             Color(*theme.BG_DARK)
             self._bg = Rectangle(pos=self.pos, size=self.size)
-        self.bind(pos=self._update_bg, size=self._update_bg)
+        self.bind(pos=self._upd_bg, size=self._upd_bg)
 
-        # ============================================================
-        # MAIN CONTENT (top bar + screen area) - full width always
-        # ============================================================
         self._main_column = BoxLayout(orientation='vertical')
 
         # Top bar
-        top_bar = BoxLayout(
-            size_hint_y=None, height=80,
-            padding=[15, 0], spacing=10,
-        )
-        with top_bar.canvas.before:
-            Color(*theme.SIDEBAR_BG)
-            top_bar._bg = Rectangle(pos=top_bar.pos, size=top_bar.size)
-            Color(*theme.SIDEBAR_BORDER)
-            top_bar._border = Rectangle(pos=top_bar.pos, size=(1, 1))
-        def _update_top_bar(inst, val):
-            inst._bg.pos = inst.pos
-            inst._bg.size = inst.size
-            inst._border.pos = (inst.x, inst.y)
-            inst._border.size = (inst.width, 1)
-        top_bar.bind(pos=_update_top_bar, size=_update_top_bar)
+        top = BoxLayout(size_hint_y=None, height=dp(56), padding=[dp(15), 0], spacing=dp(10))
+        with top.canvas.before:
+            Color(*theme.SIDEBAR_BG); top._bg = Rectangle(pos=top.pos, size=top.size)
+            Color(*theme.SIDEBAR_BORDER); top._br = Rectangle(pos=top.pos, size=(1, 1))
 
-        # Menu toggle button
-        self._menu_btn = MenuBurgerButton(
-            size_hint=(None, None),
-            size=(45, 40),
-            pos_hint={'center_y': 0.5},
-            color=theme.GOLD,
-        )
+        def _utt(inst, v):
+            inst._bg.pos = inst.pos; inst._bg.size = inst.size
+            inst._br.pos = (inst.x, inst.y); inst._br.size = (inst.width, 1)
+        top.bind(pos=_utt, size=_utt)
+
+        self._menu_btn = MenuBurgerButton(size_hint=(None, None), size=(dp(45), dp(40)),
+            pos_hint={'center_y': 0.5}, color=theme.GOLD)
         self._menu_btn.bind(on_press=lambda *a: self._toggle_sidebar())
-        top_bar.add_widget(self._menu_btn)
+        top.add_widget(self._menu_btn)
 
-        # App title
-        title = Label(
-            text='NEUROMENTOR',
+        title_lbl = Label(text='NEUROMENTOR',
             font_size=theme.font(theme.FONT_HEADING_MEDIUM),
-            bold=True,
-            color=theme.GOLD,
-            size_hint_x=None,
-            width=250,
-            halign='left',
-            valign='middle',
-        )
-        title.bind(size=title.setter('text_size'))
-        top_bar.add_widget(title)
+            bold=True, color=theme.GOLD, size_hint_x=None, width=dp(200),
+            halign='left', valign='middle')
+        title_lbl.bind(size=title_lbl.setter('text_size')); top.add_widget(title_lbl)
+        top.add_widget(Label())
 
-        # Spacer
-        top_bar.add_widget(Label())
-
-        # Page indicator
-        self._page_indicator = Label(
-            text='',
-            font_size=theme.font(theme.FONT_BODY_SMALL),
-            color=theme.TEXT_MUTED,
-            size_hint_x=None,
-            width=150,
-            halign='right',
-            valign='middle',
-        )
+        self._page_indicator = Label(text='',
+            font_size=theme.font(theme.FONT_BODY_SMALL), color=theme.TEXT_MUTED,
+            size_hint_x=None, width=dp(140), halign='right', valign='middle')
         self._page_indicator.bind(size=self._page_indicator.setter('text_size'))
-        top_bar.add_widget(self._page_indicator)
+        top.add_widget(self._page_indicator)
+        self._main_column.add_widget(top)
 
-        self._main_column.add_widget(top_bar)
-
-        # Screen content area
-        self._screen_area = BoxLayout()
+        self._screen_area = ScreenManager()
         self._main_column.add_widget(self._screen_area)
-
         self.add_widget(self._main_column)
 
-        # ============================================================
-        # BACKDROP (semi-transparent overlay, dismisses sidebar on tap)
-        # ============================================================
         self._backdrop = _Backdrop(on_tap=self._close_sidebar)
-        self._backdrop.opacity = 0
-        self.add_widget(self._backdrop)
+        self._backdrop.opacity = 0; self.add_widget(self._backdrop)
 
-        # ============================================================
-        # SIDEBAR (slides in from left over content)
-        # ============================================================
         self._sidebar = SidebarNavigation(
             app_state=app_state,
             on_item_selected=self._close_sidebar,
             on_switch_user=self._handle_switch_user,
-            size_hint=(None, 1),
-            width=SIDEBAR_WIDTH,
-        )
-        self._sidebar.x = -SIDEBAR_WIDTH  # Start off-screen
-        self.add_widget(self._sidebar)
+            size_hint=(None, 1), width=SIDEBAR_WIDTH)
+        self._sidebar.x = -SIDEBAR_WIDTH; self.add_widget(self._sidebar)
 
-        # Build screens
         self._build_screens()
-
-        # Listen for page changes
         app_state.bind(selected_page_index=self._on_page_change)
         self._on_page_change()
 
-    def _update_bg(self, *args):
-        self._bg.pos = self.pos
-        self._bg.size = self.size
+    def _upd_bg(self, *a): self._bg.pos = self.pos; self._bg.size = self.size
 
     def _build_screens(self):
-
-        self._screens = {
-            0: DashboardScreen(app_state=self._app_state),
-            1: ProfileScreen(app_state=self._app_state),
-            2: CalibrationScreen(app_state=self._app_state),
-            3: RandomForestScreen(app_state=self._app_state),
-            4: MonitoringScreen(app_state=self._app_state),
-        }
-
-    def _on_page_change(self, *args):
-        idx = self._app_state.selected_page_index
-        if idx in (0, 1, 2):
-            self._page_indicator.text = ''
-        else:
-            self._page_indicator.text = PAGE_NAMES[idx] if idx < len(PAGE_NAMES) else ''
-
-        self._screen_area.clear_widgets()
-        screen = self._screens.get(idx)
-        if screen:
+        self._screens = {}
+        screen_defs = [
+            (0, 'dashboard',     DashboardScreen(app_state=self._app_state)),
+            (1, 'profile',       ProfileScreen(app_state=self._app_state)),
+            (2, 'calibrate',     CalibrationScreen(app_state=self._app_state)),
+            (3, 'random_forest', RandomForestScreen(app_state=self._app_state)),
+            (4, 'monitoring',    MonitoringScreen(app_state=self._app_state)),
+            (5, 'voice_asst',    Phase2NotesScreen(app_state=self._app_state)),
+            (6, 'phase2_ins',    Phase2InsightsScreen(app_state=self._app_state)),
+        ]
+        for idx, name, widget in screen_defs:
+            screen = Screen(name=name)
+            screen.add_widget(widget)
+            self._screens[idx] = screen
             self._screen_area.add_widget(screen)
-            self._current_screen = screen
+
+    def _on_page_change(self, *a):
+        idx = self._app_state.selected_page_index
+        self._page_indicator.text = PAGE_NAMES[idx] if idx < len(PAGE_NAMES) else ''
+        scr = self._screens.get(idx)
+        if scr:
+            self._screen_area.current = scr.name
+            self._current_screen      = scr
 
     def _toggle_sidebar(self):
-        if self.sidebar_open:
-            self._close_sidebar()
-        else:
-            self._open_sidebar()
+        self._close_sidebar() if self.sidebar_open else self._open_sidebar()
 
     def _open_sidebar(self):
-        if self.sidebar_open:
-            return
+        if self.sidebar_open: return
         self.sidebar_open = True
-
-        # Show backdrop with fade-in
-        anim_backdrop = Animation(opacity=1, duration=0.25, t='out_quad')
-        anim_backdrop.start(self._backdrop)
+        Animation(opacity=1, duration=0.25, t='out_quad').start(self._backdrop)
         self._backdrop.active = True
-
-        # Slide sidebar in
-        anim_sidebar = Animation(x=self.x, duration=0.25, t='out_quad')
-        anim_sidebar.start(self._sidebar)
-
-        # Change menu icon to X
+        Animation(x=self.x, duration=0.25, t='out_quad').start(self._sidebar)
         self._menu_btn.set_open(True)
 
-    def _close_sidebar(self, *args):
-        if not self.sidebar_open:
-            return
+    def _close_sidebar(self, *a):
+        if not self.sidebar_open: return
         self.sidebar_open = False
-
-        # Fade out backdrop
-        anim_backdrop = Animation(opacity=0, duration=0.25, t='out_quad')
-        anim_backdrop.start(self._backdrop)
+        Animation(opacity=0, duration=0.25, t='out_quad').start(self._backdrop)
         self._backdrop.active = False
-
-        # Slide sidebar out
-        anim_sidebar = Animation(x=self.x - SIDEBAR_WIDTH, duration=0.25, t='out_quad')
-        anim_sidebar.start(self._sidebar)
-
-        # Change menu icon back to hamburger
+        Animation(x=self.x - SIDEBAR_WIDTH, duration=0.25, t='out_quad').start(self._sidebar)
         self._menu_btn.set_open(False)
 
     def _handle_switch_user(self):
         self._close_sidebar()
         self._app_state.logout()
-        if self._on_logout:
-            self._on_logout()
+        if self._on_logout: self._on_logout()
 
 
 class _Backdrop(Widget):
-    """Semi-transparent overlay that dismisses sidebar on tap."""
-
     active = BooleanProperty(False)
 
     def __init__(self, on_tap=None, **kwargs):
         super().__init__(**kwargs)
         self._on_tap = on_tap
-
         with self.canvas:
-            Color(0, 0, 0, 0.5)
-            self._rect = Rectangle(pos=self.pos, size=self.size)
-        self.bind(
-            pos=lambda inst, val: setattr(inst._rect, 'pos', val),
-            size=lambda inst, val: setattr(inst._rect, 'size', val),
-        )
+            Color(0, 0, 0, 0.5); self._rect = Rectangle(pos=self.pos, size=self.size)
+        self.bind(pos=lambda inst, v: setattr(inst._rect, 'pos', v),
+                  size=lambda inst, v: setattr(inst._rect, 'size', v))
 
     def on_touch_down(self, touch):
         if self.active and self.collide_point(*touch.pos):
-            if self._on_tap:
-                self._on_tap()
+            if self._on_tap: self._on_tap()
             return True
         return False
 
 
 class SidebarNavigation(BoxLayout):
-    """Sidebar navigation panel with nav buttons, signal indicator, switch user."""
-
-    def __init__(self, app_state, on_item_selected=None,
-                 on_switch_user=None, **kwargs):
-        super().__init__(orientation='vertical', padding=[0, 15], **kwargs)
-        self._app_state = app_state
+    def __init__(self, app_state, on_item_selected=None, on_switch_user=None, **kwargs):
+        super().__init__(orientation='vertical', padding=[0, dp(15)], **kwargs)
+        self._app_state        = app_state
         self._on_item_selected = on_item_selected
-        self._on_switch_user = on_switch_user
-        self._nav_buttons = []
+        self._on_switch_user   = on_switch_user
 
-        # Background
         with self.canvas.before:
-            Color(*theme.SIDEBAR_BG)
-            self._bg = Rectangle(pos=self.pos, size=self.size)
-            Color(*theme.SIDEBAR_BORDER)
-            self._right_border = Rectangle(pos=self.pos, size=(1, 1))
+            Color(*theme.SIDEBAR_BG); self._bg = Rectangle(pos=self.pos, size=self.size)
+            Color(*theme.SIDEBAR_BORDER); self._rb = Rectangle(pos=self.pos, size=(1, 1))
 
-        def _update_sidebar_bg(inst, val):
-            inst._bg.pos = inst.pos
-            inst._bg.size = inst.size
-            inst._right_border.pos = (inst.x + inst.width - 1, inst.y)
-            inst._right_border.size = (1, inst.height)
-        self.bind(pos=_update_sidebar_bg, size=_update_sidebar_bg)
+        def _usb(inst, v):
+            inst._bg.pos  = inst.pos; inst._bg.size  = inst.size
+            inst._rb.pos  = (inst.x + inst.width - 1, inst.y)
+            inst._rb.size = (1, inst.height)
+        self.bind(pos=_usb, size=_usb)
 
-        # Logo / Title
-        logo = Label(
-            text='NEURO\nMENTOR',
-            font_size=theme.font(theme.FONT_TITLE_LARGE),
-            bold=True,
-            color=theme.GOLD,
-            size_hint_y=None,
-            height=80,
-            halign='center',
-        )
+        logo = Label(text='NEURO\nMENTOR',
+            font_size=theme.font(theme.FONT_TITLE_LARGE), bold=True,
+            color=theme.GOLD, size_hint_y=None, height=dp(80), halign='center')
         self.add_widget(logo)
+        self.add_widget(Label(size_hint_y=None, height=dp(16)))
 
-        # Spacer
-        self.add_widget(Label(size_hint_y=None, height=20))
-
-        # Navigation buttons
         for idx, name in enumerate(PAGE_NAMES):
-            btn = NavShadowButton(
-                text=name,
-                nav_index=idx,
-                app_state=app_state,
-                on_selected=self._on_nav_select,
-            )
-            self._nav_buttons.append(btn)
+            btn = NavShadowButton(text=name, nav_index=idx, app_state=app_state,
+                on_selected=self._on_nav_select)
             self.add_widget(btn)
 
-        # Spacer (takes remaining space)
         self.add_widget(Label())
 
-        # Signal indicator
-        signal_row = BoxLayout(
-            size_hint_y=None, height=25, padding=[15, 0], spacing=8,
-        )
-        sig_label = Label(
-            text='SIGNAL:',
-            font_size=theme.font(theme.FONT_BODY_SMALL),
-            color=theme.TEXT_MUTED,
-            size_hint_x=None,
-            width=100,
-            halign='left',
-            valign='middle',
-        )
-        sig_label.bind(size=sig_label.setter('text_size'))
-        signal_row.add_widget(sig_label)
+        sr = BoxLayout(size_hint_y=None, height=dp(25), padding=[dp(15), 0], spacing=dp(8))
+        sl = Label(text='SIGNAL:', font_size=theme.font(theme.FONT_BODY_SMALL),
+            color=theme.TEXT_MUTED, size_hint_x=None, width=dp(80),
+            halign='left', valign='middle')
+        sl.bind(size=sl.setter('text_size')); sr.add_widget(sl)
+        sr.add_widget(Label(text='\u25cf', font_size=sp(16),
+            color=(0.2, 0.2, 0.2, 1), size_hint_x=None, width=dp(20)))
+        il = Label(text='IDLE', font_size=theme.font(theme.FONT_BODY_SMALL),
+            color=theme.TEXT_MUTED, halign='left', valign='middle')
+        il.bind(size=il.setter('text_size')); sr.add_widget(il)
+        self.add_widget(sr)
+        self.add_widget(Label(size_hint_y=None, height=dp(10)))
 
-        # LED circle
-        led = Label(
-            text='\u25cf',
-            font_size=sp(16),
-            color=(0.2, 0.2, 0.2, 1),
-            size_hint_x=None,
-            width=20,
-        )
-        signal_row.add_widget(led)
-
-        idle_label = Label(
-            text='IDLE',
-            font_size=theme.font(theme.FONT_BODY_SMALL),
-            color=theme.TEXT_MUTED,
-            halign='left',
-            valign='middle',
-        )
-        idle_label.bind(size=idle_label.setter('text_size'))
-        signal_row.add_widget(idle_label)
-        self.add_widget(signal_row)
-
-        # Spacer
-        self.add_widget(Label(size_hint_y=None, height=10))
-
-        # Switch user button
-        switch_btn = ShadowButton(
-            text='SWITCH USER',
+        swb = ShadowButton(text='SWITCH USER',
             font_size=theme.font(theme.FONT_BODY_REGULAR),
-            size_hint_y=None,
-            height=40,
-            background_color=(0.133, 0.133, 0.133, 1),
-            color=theme.TEAL,
-        )
-        switch_btn.bind(on_press=lambda *a: self._show_switch_dialog())
-        
-        burger = MenuBurgerButton(
-            size_hint=(None, None), size=(30, 30), pos_hint={'center_y': 0.5}, color=theme.TEAL
-        )
-        burger.bind(on_press=lambda *a: self._show_switch_dialog())
-
-        switch_layout = BoxLayout(orientation='horizontal', spacing=10, size_hint_y=None, height=40)
-        switch_layout.add_widget(burger)
-        switch_layout.add_widget(switch_btn)
-
-        switch_row = BoxLayout(size_hint_y=None, height=55, padding=[15, 8])
-        switch_row.add_widget(switch_layout)
-        self.add_widget(switch_row)
+            size_hint_y=None, height=dp(40),
+            background_color=(0.133, 0.133, 0.133, 1), color=theme.TEAL)
+        swb.bind(on_press=lambda *a: self._show_switch_dialog())
+        srow = BoxLayout(size_hint_y=None, height=dp(55), padding=[dp(15), dp(8)])
+        srow.add_widget(swb); self.add_widget(srow)
 
     def _on_nav_select(self, index):
         self._app_state.set_selected_page(index)
-        if self._on_item_selected:
-            self._on_item_selected()
+        if self._on_item_selected: self._on_item_selected()
 
     def _show_switch_dialog(self):
-        content = BoxLayout(orientation='vertical', padding=10, spacing=10)
-        content.size_hint_y = None
-        content.bind(minimum_height=content.setter('height'))
-        msg = Label(
-            text='This will end the current session\nand return to login. Continue?',
+        cont = BoxLayout(orientation='vertical', padding=dp(10), spacing=dp(10),
+                         size_hint_y=None)
+        cont.bind(minimum_height=cont.setter('height'))
+        msg = Label(text='This will end the current session\nand return to login. Continue?',
             font_size=theme.font(theme.FONT_BODY_REGULAR),
-            color=theme.TEXT_SECONDARY,
-            halign='center',
-        )
-        msg.bind(size=msg.setter('text_size'))
-        content.add_widget(msg)
+            color=theme.TEXT_SECONDARY, halign='center')
+        msg.bind(texture_size=lambda inst, sz: setattr(inst, 'height', max(sz[1], dp(48))))
+        cont.add_widget(msg)
+        br = BoxLayout(size_hint_y=None, height=dp(44), spacing=dp(10))
+        nb = ShadowButton(text='No',  font_size=theme.font(theme.FONT_BODY_REGULAR),
+            background_color=theme.PANEL_BG, color=theme.TEXT_MUTED)
+        yb = ShadowButton(text='Yes', font_size=theme.font(theme.FONT_BODY_REGULAR),
+            background_color=theme.PANEL_BG, color=theme.GOLD)
+        br.add_widget(nb); br.add_widget(yb); cont.add_widget(br)
+        pop = Popup(title='SWITCH USER', title_color=theme.TEXT_PRIMARY,
+            content=cont, size_hint=(None, None), size=(dp(300), dp(200)),
+            background_color=theme.PANEL_BG, auto_dismiss=True)
+        nb.bind(on_press=lambda *a: pop.dismiss())
 
-        btn_row = BoxLayout(size_hint_y=None, height=40, spacing=10)
-        no_btn = ShadowButton(
-            text='No',
-            font_size=theme.font(theme.FONT_BODY_REGULAR),
-            background_color=theme.PANEL_BG,
-            color=theme.TEXT_MUTED,
-        )
-        yes_btn = ShadowButton(
-            text='Yes',
-            font_size=theme.font(theme.FONT_BODY_REGULAR),
-            background_color=theme.PANEL_BG,
-            color=theme.GOLD,
-        )
-        btn_row.add_widget(no_btn)
-        btn_row.add_widget(yes_btn)
-        content.add_widget(btn_row)
-
-        popup = Popup(
-            title='SWITCH USER',
-            title_color=theme.TEXT_PRIMARY,
-            content=content,
-            size_hint=(None, None),
-            size=(320, 200),
-            background_color=theme.PANEL_BG,
-            auto_dismiss=True,
-        )
-
-        no_btn.bind(on_press=lambda *a: popup.dismiss())
-
-        def _yes_pressed(*a):
-            popup.dismiss()
-            if self._on_switch_user:
-                self._on_switch_user()
-        yes_btn.bind(on_press=_yes_pressed)
-        popup.open()
+        def _yes(*a):
+            pop.dismiss()
+            if self._on_switch_user: self._on_switch_user()
+        yb.bind(on_press=_yes)
+        pop.open()
 
 
 class NavShadowButton(BoxLayout):
-    """
-    Navigation button with selection highlight matching Flutter's style:
-    - Gold left border accent when selected
-    - Gold text when selected, muted text otherwise
-    - Subtle background tint when selected
-    """
-
     def __init__(self, text, nav_index, app_state, on_selected=None, **kwargs):
-        super().__init__(
-            size_hint_y=None, height=48,
-            padding=[0, 2],
-            **kwargs,
-        )
-        self._nav_index = nav_index
-        self._app_state = app_state
+        super().__init__(size_hint_y=None, height=dp(48), padding=[0, dp(2)], **kwargs)
+        self._nav_index  = nav_index
+        self._app_state  = app_state
         self._on_selected = on_selected
-        self._text = text
-
-        # Selection accent (left border, 4px wide)
         with self.canvas.before:
-            self._sel_bg_color = Color(
-                theme.GOLD[0], theme.GOLD[1], theme.GOLD[2], 0
-            )
-            self._sel_bg = RoundedRectangle(
-                pos=self.pos, size=self.size, radius=[8]
-            )
-            self._accent_color = Color(*theme.GOLD, 0)
-            self._accent_rect = Rectangle(
-                pos=self.pos, size=(4, 1)
-            )
-
-        self._btn = ShadowButton(
-            text=text,
+            self._sbc = Color(theme.GOLD[0], theme.GOLD[1], theme.GOLD[2], 0)
+            self._sb  = RoundedRectangle(pos=self.pos, size=self.size, radius=[dp(8)])
+            self._ac  = Color(*theme.GOLD, 0)
+            self._ar  = Rectangle(pos=self.pos, size=(dp(4), 1))
+        self._btn = ShadowButton(text=text,
             font_size=theme.font(theme.FONT_BODY_REGULAR),
-            halign='left',
-            valign='middle',
-            background_color=theme.TRANSPARENT,
-            color=theme.TEXT_MUTED,
-            padding=[14, 0],
-        )
+            halign='left', valign='middle', background_color=theme.TRANSPARENT,
+            color=theme.TEXT_MUTED, padding=[dp(14), 0])
         self._btn.bind(on_press=lambda *a: self._select())
         self._btn.bind(size=self._btn.setter('text_size'))
         self.add_widget(self._btn)
-
-        # Update styling when selection changes
         app_state.bind(selected_page_index=self._update_style)
-        self.bind(pos=self._update_canvas, size=self._update_canvas)
+        self.bind(pos=self._upc, size=self._upc)
         self._update_style()
 
     def _select(self):
-        if self._on_selected:
-            self._on_selected(self._nav_index)
+        if self._on_selected: self._on_selected(self._nav_index)
 
-    def _update_canvas(self, *args):
-        self._sel_bg.pos = (self.x + 8, self.y + 2)
-        self._sel_bg.size = (self.width - 16, self.height - 4)
-        self._accent_rect.pos = (self.x + 8, self.y + 2)
-        self._accent_rect.size = (4, self.height - 4)
+    def _upc(self, *a):
+        self._sb.pos  = (self.x + dp(8), self.y + dp(2))
+        self._sb.size = (self.width - dp(16), self.height - dp(4))
+        self._ar.pos  = (self.x + dp(8), self.y + dp(2))
+        self._ar.size = (dp(4), self.height - dp(4))
 
-    def _update_style(self, *args):
-        is_selected = (self._app_state.selected_page_index == self._nav_index)
-        if is_selected:
-            self._btn.color = theme.GOLD
-            self._btn.bold = True
-            self._sel_bg_color.rgba = (
-                theme.GOLD[0], theme.GOLD[1], theme.GOLD[2], 0.1
-            )
-            self._accent_color.a = 1
-        else:
-            self._btn.color = theme.TEXT_MUTED
-            self._btn.bold = False
-            self._sel_bg_color.a = 0
-            self._accent_color.a = 0
-        self._update_canvas()
+    def _update_style(self, *a):
+        sel = (self._app_state.selected_page_index == self._nav_index)
+        self._btn.color = theme.GOLD if sel else theme.TEXT_MUTED
+        self._btn.bold  = sel
+        self._sbc.rgba  = (theme.GOLD[0], theme.GOLD[1], theme.GOLD[2], 0.1 if sel else 0)
+        self._ac.a      = 1 if sel else 0
+        self._upc()
 
 
 # ============================================================
-# File: main.py
+# NeuroMentorApp
 # ============================================================
-
-"""
-NeuroMentor - EEG Brain-Computer Interface Application
-Kivy version for Android APK generation via Buildozer.
-
-Entry point: run this file to start the application.
-"""
-import os
-import sys
-
-# Add project root to path for imports
-
-from kivy.config import Config
-# Disable multi-touch emulation (red dots) on desktop
-Config.set('input', 'mouse', 'mouse,multitouch_on_demand')
-# Lock orientation to portrait on desktop
-Config.set('graphics', 'rotation', '0')
-
-from kivy.app import App
-from kivy.core.window import Window
-from kivy.uix.floatlayout import FloatLayout
-
 class NeuroMentorApp(App):
-    """Main NeuroMentor Kivy Application."""
-
     def build(self):
-        from kivy.utils import platform
-        if platform == "android":
+        # Android permissions
+        if platform == 'android':
             try:
                 from android.permissions import request_permissions, Permission
                 request_permissions([
                     Permission.BLUETOOTH_SCAN,
                     Permission.BLUETOOTH_CONNECT,
-                    Permission.ACCESS_FINE_LOCATION
+                    Permission.ACCESS_FINE_LOCATION,
+                    Permission.WRITE_EXTERNAL_STORAGE,
+                    Permission.READ_EXTERNAL_STORAGE,
+                    Permission.INTERNET,
                 ])
             except ImportError:
                 pass
-            # Lock orientation to portrait on Android via jnius
             try:
                 from jnius import autoclass
-                activity = autoclass('org.kivy.android.PythonActivity').mActivity
-                activity.setRequestedOrientation(1)  # 1 = SCREEN_ORIENTATION_PORTRAIT
+                act = autoclass('org.kivy.android.PythonActivity').mActivity
+                act.setRequestedOrientation(1)
             except ImportError:
-                pass  # Not on Android, skip
-        self.title = 'NeuroMentor'
-        # Set dark background (fallback for desktop)
-        try:
-            Window.clearcolor = theme.BG_DEEP
-        except Exception:
-            Window.clearcolor = (0.02, 0.02, 0.04, 1)
-        # Create app state
-        self.app_state = AppState()
-        # Root container
-        from kivy.uix.boxlayout import BoxLayout
-        self.root_container = BoxLayout(
-            orientation='vertical',
-            padding=[10, 10, 10, 10],
-            spacing=10,
-            size_hint=(1, 1)
-        )
+                pass
 
-        # Show login screen initially
+        self.title      = 'NeuroMentor'
+        Window.clearcolor = theme.BG_DARK
+        self.app_state  = AppState()
+
+        self.root_container = FloatLayout()
         self._show_login()
-
-        # Listen for user changes
         self.app_state.bind(current_user=self._on_user_change)
-
         return self.root_container
 
-    def _on_user_change(self, *args):
-        """Handle user login/logout."""
+    def _on_user_change(self, *a):
         if self.app_state.current_user is None:
             self._show_login()
         else:
             self._show_main()
 
-    def _show_login(self):
-        """Show the login screen."""
+    def _show_login(self, *a):
         self.root_container.clear_widgets()
-        login = LoginScreen(
-            app_state=self.app_state,
-            on_login=self._show_main,
-        )
-        self.root_container.add_widget(login)
+        self.root_container.add_widget(
+            LoginScreen(app_state=self.app_state, on_login=self._show_main))
 
-    def _show_main(self, *args):
-        """Show the main app shell."""
+    def _show_main(self, *a):
         self.root_container.clear_widgets()
-        main_shell = MainShell(
-            app_state=self.app_state,
-            on_logout=self._show_login,
-        )
-        self.root_container.add_widget(main_shell)
+        self.root_container.add_widget(
+            MainShell(app_state=self.app_state, on_logout=self._show_login))
+
+    def on_stop(self):
+        pass
 
 
 if __name__ == '__main__':
