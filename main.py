@@ -1,37 +1,29 @@
 """
-NeuroMentor — Unified App (Phase 2 Final)
-Android 14 / API 34 compatible.
-Voice Assistant: ESP32 → TCP/Serial → Whisper → Ollama → UI
+NeuroMentor — Final Production Build
+Fixes:
+  - Menu burger button visible + large touch target on mobile
+  - Sidebar touch works on Android (FloatLayout root, proper z-order)
+  - Login top padding fixed
+  - PAGE_NAMES reduced: VOICE ASSISTANT and PHASE 2 INSIGHTS removed from menu
+    (both accessible only via Dashboard buttons)
+  - DashboardScreen has: Ask NeuroMentor (Ollama Q&A) + TRANSCRIBER (speech→text+summary)
+  - Phase2InsightsScreen is now a full Transcriber (live speech → transcript → Ollama summary)
+  - Colour scheme matches original (Charcoal/Gold/Mustard palette)
 """
 
-# ============================================================
-# Kivy config MUST come before any other kivy import
-# ============================================================
+# ── Kivy config MUST be first ────────────────────────────────────────────
 from kivy.config import Config
 Config.set('input', 'mouse', 'mouse,multitouch_on_demand')
 Config.set('graphics', 'rotation', '0')
 
-# ============================================================
-# Standard library imports
-# ============================================================
-import os
-import re
-import json
-import math
-import time
-import wave
-import socket
-import random
-import threading
-import traceback
+# ── Std-lib ──────────────────────────────────────────────────────────────
+import os, re, json, math, time, wave, socket, random, threading, traceback
 from io import StringIO
 from collections import deque
 from dataclasses import dataclass
 from datetime import datetime
 
-# ============================================================
-# Kivy imports
-# ============================================================
+# ── Kivy ─────────────────────────────────────────────────────────────────
 from kivy.metrics import sp, dp
 from kivy.app import App
 from kivy.core.window import Window
@@ -61,116 +53,97 @@ from kivy.graphics.texture import Texture
 if platform != 'android':
     Window.size = (390, 844)
 
-# ============================================================
-# Optional heavy imports — graceful fallback on missing deps
-# ============================================================
+# ── Optional deps ────────────────────────────────────────────────────────
 try:
-    import serial as _serial_mod
-    _HAS_SERIAL = True
+    import serial as _serial_mod; _HAS_SERIAL = True
 except ImportError:
     _HAS_SERIAL = False
 
 try:
-    import whisper as _whisper_mod
-    _HAS_WHISPER = True
+    import whisper as _whisper_mod; _HAS_WHISPER = True
 except ImportError:
     _HAS_WHISPER = False
 
 try:
-    import requests as _requests_mod
-    _HAS_REQUESTS = True
+    import requests as _requests_mod; _HAS_REQUESTS = True
 except ImportError:
     _HAS_REQUESTS = False
 
 try:
-    import joblib
-    import numpy as np
-    _HAS_SKLEARN = True
+    import joblib, numpy as np; _HAS_SKLEARN = True
 except ImportError:
     _HAS_SKLEARN = False
 
 try:
-    import numpy as np
-    _HAS_NUMPY = True
+    import numpy as np; _HAS_NUMPY = True
 except ImportError:
     _HAS_NUMPY = False
 
 try:
-    import joblib as _joblib_compat
-    _HAS_JOBLIB = True
+    import joblib as _joblib_compat; _HAS_JOBLIB = True
 except ImportError:
     _HAS_JOBLIB = False
 
 
-# ============================================================
-# AutoLabel and AutoButton
-# ============================================================
+# ════════════════════════════════════════════════════════════════════════
+# AutoLabel / AutoButton
+# ════════════════════════════════════════════════════════════════════════
 class AutoLabel(Label):
-    """Label with automatic text wrapping and dynamic height."""
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
         self.size_hint_y = None
         self.halign = kwargs.get('halign', 'left')
         self.valign = 'middle'
         self.shorten = False
-        self.bind(width=self._update_text_size)
-        self.bind(texture_size=self._update_height)
+        self.bind(width=self._update_text_size, texture_size=self._update_height)
 
-    def _update_text_size(self, *args):
-        if self.width < dp(120):
-            return
-        self.text_size = (self.width - dp(16), None)
+    def _update_text_size(self, *a):
+        if self.width >= dp(80):
+            self.text_size = (self.width - dp(8), None)
 
-    def _update_height(self, *args):
+    def _update_height(self, *a):
         self.height = max(self.texture_size[1] + dp(4), dp(20))
 
 
 class AutoButton(ButtonBehavior, Label):
-    """Button with automatic text wrapping and dynamic height."""
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
         self.size_hint_y = None
         self.halign = 'center'
         self.valign = 'middle'
-        self.bind(width=self._update_text_size)
-        self.bind(texture_size=self._update_height)
+        self.bind(width=self._update_text_size, texture_size=self._update_height)
 
-    def _update_text_size(self, *args):
-        if self.width < dp(120):
-            return
-        self.text_size = (self.width - dp(16), None)
+    def _update_text_size(self, *a):
+        if self.width >= dp(80):
+            self.text_size = (self.width - dp(8), None)
 
-    def _update_height(self, *args):
+    def _update_height(self, *a):
         self.height = max(self.texture_size[1], dp(48))
 
 
-# ============================================================
-# theme
-# ============================================================
+# ════════════════════════════════════════════════════════════════════════
+# theme  — original Charcoal / Gold / Mustard palette
+# ════════════════════════════════════════════════════════════════════════
 class theme:
-    GOLD = (0.435, 0.753, 0.945, 1)
-    TEAL = (0.000, 0.470, 0.831, 1)
-    RED  = (0.090, 0.231, 0.353, 1)
-
-    BG_DARK      = (0.051, 0.141, 0.220, 1)
-    PANEL_BG     = (0.085, 0.200, 0.333, 1)
-    CARD_BG      = (0.109, 0.235, 0.376, 1)
-    BORDER_DARK  = (0.070, 0.187, 0.286, 1)
-    BORDER_LIGHT = (0.435, 0.753, 0.945, 1)
-
-    TEXT_PRIMARY   = (0.941, 0.965, 0.980, 1)
-    TEXT_SECONDARY = (0.757, 0.863, 0.941, 1)
-    TEXT_MUTED     = (0.627, 0.765, 0.882, 1)
-
-    INPUT_BG     = (0.051, 0.102, 0.169, 1)
-    INPUT_BORDER = (0.435, 0.753, 0.945, 1)
-
-    SIDEBAR_BG     = (0.085, 0.200, 0.333, 1)
-    SIDEBAR_BORDER = (0.070, 0.187, 0.286, 1)
-    DARK_CARD      = (0.109, 0.235, 0.376, 1)
-    BUTTON_BG      = (0.109, 0.235, 0.376, 1)
-    DANGER_BUTTON_BG = (0.118, 0.631, 0.969, 1)
-    TRANSPARENT    = (0, 0, 0, 0)
+    GOLD             = (0.647, 0.486, 0.263, 1)   # #a57c43
+    TEAL             = (0.741, 0.608, 0.416, 1)   # #bd9b6a
+    RED              = (0.439, 0.184, 0.188, 1)   # #702f30
+    BG_DARK          = (0.176, 0.231, 0.216, 1)   # #2d3b37
+    PANEL_BG         = (0.220, 0.196, 0.200, 1)   # #383233
+    CARD_BG          = (0.260, 0.236, 0.240, 1)   # #423c3d
+    BORDER_DARK      = (0.220, 0.196, 0.200, 1)
+    BORDER_LIGHT     = (0.741, 0.608, 0.416, 1)
+    TEXT_PRIMARY     = (0.898, 0.871, 0.773, 1)   # #e5dec5
+    TEXT_SECONDARY   = (0.839, 0.733, 0.682, 1)   # #d6bbae
+    TEXT_MUTED       = (0.650, 0.610, 0.550, 1)
+    INPUT_BG         = (0.160, 0.136, 0.140, 1)   # #292324
+    INPUT_BORDER     = (0.741, 0.608, 0.416, 1)
+    SIDEBAR_BG       = (0.220, 0.196, 0.200, 1)
+    SIDEBAR_BORDER   = (0.176, 0.231, 0.216, 1)
+    DARK_CARD        = (0.176, 0.231, 0.216, 1)
+    BUTTON_BG        = (0.260, 0.236, 0.240, 1)   # #423c3d
+    DANGER_BUTTON_BG = (0.439, 0.184, 0.188, 1)
+    TRANSPARENT      = (0, 0, 0, 0)
 
     FONT_TITLE_LARGE   = 26
     FONT_TITLE_MEDIUM  = 22
@@ -183,459 +156,176 @@ class theme:
     FONT_TIMER         = 22
 
     @staticmethod
-    def font(size):
-        return sp(size)
+    def font(size): return sp(size)
 
     @staticmethod
     def rgba_hex(hex_color, alpha=1.0):
-        hex_color = hex_color.lstrip('#')
-        r = int(hex_color[0:2], 16) / 255.0
-        g = int(hex_color[2:4], 16) / 255.0
-        b = int(hex_color[4:6], 16) / 255.0
-        return (r, g, b, alpha)
+        h = hex_color.lstrip('#')
+        return (int(h[0:2],16)/255, int(h[2:4],16)/255, int(h[4:6],16)/255, alpha)
 
     @staticmethod
     def with_alpha(color, alpha):
         return (color[0], color[1], color[2], alpha)
 
 
-# ============================================================
-# RF Classifier
-# ============================================================
+# ════════════════════════════════════════════════════════════════════════
+# RF Classifier stubs
+# ════════════════════════════════════════════════════════════════════════
 @dataclass
 class EegBands:
-    delta: float = 0.0
-    theta: float = 0.0
-    alpha: float = 0.0
-    beta:  float = 0.0
-    gamma: float = 0.0
-
+    delta: float = 0.0; theta: float = 0.0; alpha: float = 0.0
+    beta:  float = 0.0; gamma: float = 0.0
 
 FEATURE_NAMES = [
-    'delta', 'theta', 'alpha', 'beta', 'gamma',
-    'beta_alpha_ratio', 'alpha_theta_ratio',
-    'beta_theta_ratio', 'gamma_beta_ratio',
-    'beta_minus_alpha', 'alpha_plus_theta',
+    'delta','theta','alpha','beta','gamma',
+    'beta_alpha_ratio','alpha_theta_ratio','beta_theta_ratio',
+    'gamma_beta_ratio','beta_minus_alpha','alpha_plus_theta',
 ]
 
-SCALER_B64 = 'gASVvwIAAAAAAACMG3NrbGVhcm4ucHJlcHJvY2Vzc2luZy5fZGF0YZSMDlN0YW5kYXJkU2NhbGVylJOUKYGUfZQojAl3aXRoX21lYW6UiIwId2l0aF9zdGSUiIwEY29weZSIjA5uX2ZlYXR1cmVzX2luX5RLC4wPbl9zYW1wbGVzX3NlZW5flIwWbnVtcHkuX2NvcmUubXVsdGlhcnJheZSMBnNjYWxhcpSTlIwFbnVtcHmUjAVkdHlwZZSTlIwCZjiUiYiHlFKUKEsDjAE8lE5OTkr/////Sv////9LAHSUYkMIAAAAAAB18kCUhpRSlIwFbWVhbl+UaAqMDF9yZWNvbnN0cnVjdJSTlGgNjAduZGFycmF5lJOUSwCFlEMBYpSHlFKUKEsBSwuFlGgPjAJmOJSJiIeUUpQoSwNoE05OTkr/////Sv////9LAHSUYolDWEwZudgyN8hAQvbgBzyg0UAtF7dGMtbMQGJR2OPLRORAMiq5uJbFE0GLMbx8SKMZQLD7Q7BKce8/MWigKSBVGkAIi2N+L0goQIbig71PHtpAQaN2QKwF4ECUdJRijAR2YXJflGgaaBxLAIWUaB6HlFKUKEsBSwuFlGgkiUNYDSfWa/YosUEp+ZyxkuO8Qddf4hqlIbVB2pT65Fq/4kHEuvEFgYw8Qjayjx30ylZAyhkJCLPs3D/u5HghXlFgQLmayxx0wWNAAcVolNy70UHSxIj6sfbWQZR0lGKMBnNjYWxlX5RoGmgcSwCFlGgeh5RSlChLAUsLhZRoJIlDWJGsMibikdBA2n7MU9d/1UC+5FftN2PSQNgcar9FfuhAtv5Qs1hfFUF9wENxwhgjQC8SWGs8g+U/pkV7GN/ZJkDZph9OqiQpQASvrkQ52OBA32PLsQwr40CUdJRijBBfc2tsZWFybl92ZXJzaW9ulIwFMS44LjCUdWIu'
+SCALER_B64  = 'gASVvwIAAAAAAACMG3NrbGVhcm4ucHJlcHJvY2Vzc2luZy5fZGF0YZSMDlN0YW5kYXJkU2NhbGVylJOUKYGUfZQojAl3aXRoX21lYW6UiIwId2l0aF9zdGSUiIwEY29weZSIjA5uX2ZlYXR1cmVzX2luX5RLC4wPbl9zYW1wbGVzX3NlZW5flIwWbnVtcHkuX2NvcmUubXVsdGlhcnJheZSMBnNjYWxhcpSTlIwFbnVtcHmUjAVkdHlwZZSTlIwCZjiUiYiHlFKUKEsDjAE8lE5OTkr/////Sv////9LAHSUYkMIAAAAAAB18kCUhpRSlIwFbWVhbl+UaAqMDF9yZWNvbnN0cnVjdJSTlGgNjAduZGFycmF5lJOUSwCFlEMBYpSHlFKUKEsBSwuFlGgPjAJmOJSJiIeUUpQoSwNoE05OTkr/////Sv////9LAHSUYolDWEwZudgyN8hAQvbgBzyg0UAtF7dGMtbMQGJR2OPLRORAMiq5uJbFE0GLMbx8SKMZQLD7Q7BKce8/MWigKSBVGkAIi2N+L0goQIbig71PHtpAQaN2QKwF4ECUdJRijAR2YXJflGgaaBxLAIWUaB6HlFKUKEsBSwuFlGgkiUNYDSfWa/YosUEp+ZyxkuO8Qddf4hqlIbVB2pT65Fq/4kHEuvEFgYw8Qjayjx30ylZAyhkJCLPs3D/u5HghXlFgQLmayxx0wWNAAcVolNy70UHSxIj6sfbWQZR0lGKMBnNjYWxlX5RoGmgcSwCFlGgeh5RSlChLAUsLhZRoJIlDWJGsMibikdBA2n7MU9d/1UC+5FftN2PSQNgcar9FfuhAtv5Qs1hfFUF9wENxwhgjQC8SWGs8g+U/pkV7GN/ZJkDZph9OqiQpQASvrkQ52OBA32PLsQwr40CUdJRijBBfc2tsZWFybl92ZXJzaW9ulIwFMS44LjCUdWIu'
 ENCODER_B64 = 'gASVCAEAAAAAAACMHHNrbGVhcm4ucHJlcHJvY2Vzc2luZy5fbGFiZWyUjAxMYWJlbEVuY29kZXKUk5QpgZR9lCiMCGNsYXNzZXNflIwWbnVtcHkuX2NvcmUubXVsdGlhcnJheZSMDF9yZWNvbnN0cnVjdJSTlIwFbnVtcHmUjAduZGFycmF5lJOUSwCFlEMBYpSHlFKUKEsBSwOFlGgJjAVkdHlwZZSTlIwCTziUiYiHlFKUKEsDjAF8lE5OTkr/////Sv////9LP3SUYoldlCiMCEJhc2VsaW5llIwHRm9jdXNlZJSMCFN0cmVzc2VklGV0lGKMEF9za2xlYXJuX3ZlcnNpb26UjAUxLjguMJR1Yi4='
 RFC_B64_COMPRESSED = None
 
 
-def _decode_model(b64_string):
+def _decode_model(b64):
     import base64, pickle
-    try:
-        return pickle.loads(base64.b64decode(b64_string))
-    except Exception as e:
-        print(f"[embedded_model] decode failed: {e}")
-        return None
+    try: return pickle.loads(base64.b64decode(b64))
+    except: return None
 
-
-def safe_div(n, d, eps=1e-6):
-    return n / max(abs(d), eps)
+def safe_div(n, d, eps=1e-9): return n / max(abs(d), eps)
 
 
 class RFClassifier:
     def __init__(self):
-        self._clf     = None
-        self._scaler  = None
-        self._encoder = None
-        self._is_trained = False
-        self._feature_names = list(FEATURE_NAMES)
+        self._clf=self._scaler=self._encoder=None
+        self._is_trained=False
+        self._feature_names=list(FEATURE_NAMES)
         self._load_from_embedded()
 
     def _load_from_embedded(self):
-        if not _HAS_SKLEARN:
-            return
+        if not _HAS_SKLEARN: return
         if SCALER_B64:
-            try:
-                self._scaler = _decode_model(SCALER_B64)
-            except Exception as e:
-                print(f"[RFClassifier] scaler decode error: {e}")
+            try: self._scaler = _decode_model(SCALER_B64)
+            except: pass
         if ENCODER_B64:
-            try:
-                self._encoder = _decode_model(ENCODER_B64)
-            except Exception as e:
-                print(f"[RFClassifier] encoder decode error: {e}")
+            try: self._encoder = _decode_model(ENCODER_B64)
+            except: pass
         if RFC_B64_COMPRESSED:
-            import base64, gzip, io
+            import base64,gzip,io
             try:
-                data = gzip.decompress(base64.b64decode(RFC_B64_COMPRESSED))
-                self._clf = joblib.load(io.BytesIO(data))
-                self._is_trained = True
-                return
-            except Exception as e:
-                print(f"[RFClassifier] compressed RFC decode error: {e}")
+                data=gzip.decompress(base64.b64decode(RFC_B64_COMPRESSED))
+                self._clf=joblib.load(io.BytesIO(data)); self._is_trained=True; return
+            except: pass
         self._load_clf_from_disk()
 
     def _load_clf_from_disk(self):
-        if not _HAS_SKLEARN:
-            return
+        if not _HAS_SKLEARN: return
         try:
-            app = App.get_running_app()
-            data_root = app.user_data_dir if app else os.path.dirname(os.path.abspath(__file__))
-        except Exception:
-            data_root = os.path.dirname(os.path.abspath(__file__))
+            app=App.get_running_app()
+            root=app.user_data_dir if app else os.path.dirname(os.path.abspath(__file__))
+        except: root=os.path.dirname(os.path.abspath(__file__))
+        for p in [os.path.join(root,'rf_model','rf_model','rf_eeg_model.pkl'),
+                  os.path.join(root,'rf_eeg_model.pkl')]:
+            if os.path.exists(p):
+                try: self._clf=joblib.load(p); self._is_trained=True; return
+                except: pass
 
-        candidates = [
-            os.path.join(data_root, 'rf_model', 'rf_model', 'rf_eeg_model.pkl'),
-            os.path.join(data_root, 'rf_eeg_model.pkl'),
-            os.path.join(os.path.dirname(os.path.abspath(__file__)),
-                         'rf_model', 'rf_model', 'rf_eeg_model.pkl'),
-        ]
-        for path in candidates:
-            if os.path.exists(path):
-                try:
-                    self._clf = joblib.load(path)
-                    self._is_trained = True
-                    print(f"[RFClassifier] Loaded from {path}")
-                    return
-                except Exception as e:
-                    print(f"[RFClassifier] Load failed {path}: {e}")
-        print("[RFClassifier] No model file found — predictions return Unknown.")
-
-    def build_feature_vector(self, bands: EegBands) -> list:
-        d, t, a, b, g = bands.delta, bands.theta, bands.alpha, bands.beta, bands.gamma
-        fv = [
-            d, t, a, b, g,
-            safe_div(b, a),
-            safe_div(a, t),
-            safe_div(b, t),
-            safe_div(g, b),
-            b - a,
-            a + t,
-        ]
-        if _HAS_SKLEARN:
-            fv = list(np.clip(np.array(fv), -1e3, 1e3))
+    def build_feature_vector(self, bands):
+        d,t,a,b,g=bands.delta,bands.theta,bands.alpha,bands.beta,bands.gamma
+        fv=[d,t,a,b,g,safe_div(b,a),safe_div(a,t),safe_div(b,t),
+            safe_div(g,b),b-a,a+t]
+        if _HAS_SKLEARN: fv=list(np.clip(np.array(fv),-1e3,1e3))
         return fv
 
-    def train(self, session_bands, session_labels):
-        if not _HAS_SKLEARN:
-            raise RuntimeError("scikit-learn not installed")
-        from sklearn.ensemble import RandomForestClassifier
-        from sklearn.preprocessing import StandardScaler, LabelEncoder
-        from sklearn.model_selection import cross_val_score
-
-        X = np.array([self.build_feature_vector(b) for b in session_bands])
-        y = np.array(session_labels)
-        self._encoder = LabelEncoder()
-        y_enc = self._encoder.fit_transform(y)
-        self._scaler = StandardScaler()
-        Xs = self._scaler.fit_transform(X)
-
-        clf_cv = RandomForestClassifier(
-            n_estimators=200, max_depth=20,
-            min_samples_split=3, min_samples_leaf=1,
-            random_state=42, n_jobs=1)
-        cv = cross_val_score(clf_cv, Xs, y_enc, cv=5, scoring='accuracy')
-
-        self._clf = RandomForestClassifier(
-            n_estimators=200, max_depth=20,
-            min_samples_split=3, min_samples_leaf=1,
-            random_state=42, n_jobs=1)
-        self._clf.fit(Xs, y_enc)
-        self._is_trained = True
-
-        unique, counts = np.unique(y, return_counts=True)
-        return {
-            'cv_accuracy': float(np.mean(cv)),
-            'cv_std': float(np.std(cv)),
-            'feature_importances': dict(zip(self._feature_names,
-                                            self._clf.feature_importances_.tolist())),
-            'n_samples': len(y),
-            'class_distribution': {str(u): int(c) for u, c in zip(unique, counts)},
-        }
-
-    def predict(self, bands: EegBands) -> str:
-        if not _HAS_SKLEARN:
+    def predict(self, bands):
+        if not _HAS_SKLEARN or not self._is_trained or not self._clf or not self._scaler:
             return 'Unknown'
-        if not self._is_trained or self._clf is None or self._scaler is None:
-            return 'Unknown'
-        X = np.array([self.build_feature_vector(bands)])
-        Xs = self._scaler.transform(X)
-        pred = self._clf.predict(Xs)[0]
-        if self._encoder is not None:
-            return str(self._encoder.inverse_transform([pred])[0])
+        Xs=self._scaler.transform(np.array([self.build_feature_vector(bands)]))
+        pred=self._clf.predict(Xs)[0]
+        if self._encoder: return str(self._encoder.inverse_transform([pred])[0])
         return str(pred)
 
-    def predict_proba(self, bands: EegBands) -> dict:
-        if not self._is_trained or self._clf is None or self._scaler is None:
-            return {}
-        X = np.array([self.build_feature_vector(bands)])
-        Xs = self._scaler.transform(X)
-        proba = self._clf.predict_proba(Xs)[0]
-        if self._encoder is not None:
-            labels = self._encoder.inverse_transform(range(len(proba)))
-            return {str(l): float(p) for l, p in zip(labels, proba)}
-        return {str(i): float(p) for i, p in enumerate(proba)}
+    def save(self, dirpath):
+        if not _HAS_SKLEARN: return
+        os.makedirs(dirpath,exist_ok=True)
+        joblib.dump(self._clf,os.path.join(dirpath,'rf_eeg_model.pkl'))
+        joblib.dump(self._scaler,os.path.join(dirpath,'rf_scaler.pkl'))
+        if self._encoder: joblib.dump(self._encoder,os.path.join(dirpath,'rf_encoder.pkl'))
 
-    def save(self, dirpath: str):
-        if not _HAS_SKLEARN:
-            raise RuntimeError("joblib not installed")
-        os.makedirs(dirpath, exist_ok=True)
-        joblib.dump(self._clf,     os.path.join(dirpath, 'rf_eeg_model.pkl'))
-        joblib.dump(self._scaler,  os.path.join(dirpath, 'rf_scaler.pkl'))
-        if self._encoder is not None:
-            joblib.dump(self._encoder, os.path.join(dirpath, 'rf_encoder.pkl'))
-
-    def load(self, dirpath: str) -> bool:
-        if not _HAS_SKLEARN:
-            return False
-        mp  = os.path.join(dirpath, 'rf_eeg_model.pkl')
-        sp2 = os.path.join(dirpath, 'rf_scaler.pkl')
-        ep  = os.path.join(dirpath, 'rf_encoder.pkl')
-        if not os.path.exists(mp) or not os.path.exists(sp2):
-            return False
+    def load(self, dirpath):
+        if not _HAS_SKLEARN: return False
+        mp=os.path.join(dirpath,'rf_eeg_model.pkl')
+        sp2=os.path.join(dirpath,'rf_scaler.pkl')
+        if not os.path.exists(mp) or not os.path.exists(sp2): return False
         try:
-            self._clf    = joblib.load(mp)
-            self._scaler = joblib.load(sp2)
-            if os.path.exists(ep):
-                self._encoder = joblib.load(ep)
-            self._is_trained = True
-            return True
-        except Exception as e:
-            print(f"[RFClassifier] load failed: {e}")
-            self._is_trained = False
-            return False
+            self._clf=joblib.load(mp); self._scaler=joblib.load(sp2)
+            ep=os.path.join(dirpath,'rf_encoder.pkl')
+            if os.path.exists(ep): self._encoder=joblib.load(ep)
+            self._is_trained=True; return True
+        except: return False
 
     @property
-    def is_trained(self):
-        return self._is_trained
+    def is_trained(self): return self._is_trained
 
 
-# ============================================================
-# Compatibility check helpers
-# ============================================================
-ADC_BITS       = 24
-VREF           = 4.5
-PGA_GAIN       = 24
-ADC_RESOLUTION = (2 ** (ADC_BITS - 1)) - 1
-SAMPLE_RATE    = 250
-WINDOW_SIZE    = 256
-OVERLAP        = 128
+# ════════════════════════════════════════════════════════════════════════
+# Compatibility check (compact)
+# ════════════════════════════════════════════════════════════════════════
+ADC_BITS=24; VREF=4.5; PGA_GAIN=24; ADC_RESOLUTION=(2**(ADC_BITS-1))-1
+SAMPLE_RATE=250; WINDOW_SIZE=256; OVERLAP=128
+BAND_BOUNDARIES={'delta':(0.5,4.0),'theta':(4.0,8.0),'alpha':(8.0,13.0),'beta':(13.0,30.0),'gamma':(30.0,45.0)}
+_pass_c=_fail_c=_warn_c=0; _fail_details_c=[]; _buf_c=StringIO()
 
-BAND_BOUNDARIES = {
-    'delta': (0.5,  4.0),
-    'theta': (4.0,  8.0),
-    'alpha': (8.0, 13.0),
-    'beta':  (13.0, 30.0),
-    'gamma': (30.0, 45.0),
-}
-EXPECTED_LABELS = ['Baseline', 'Focused', 'Stressed']
-
-_pass_c = _fail_c = _warn_c = 0
-_fail_details_c = []
-_buf_c = StringIO()
-
-
-def _p(msg=''):
-    global _buf_c
-    print(msg)
-    _buf_c.write(msg + '\n')
-
-
-def _PASS(msg): global _pass_c; _pass_c += 1; _p(f'  ✓ PASS   {msg}')
-def _FAIL(msg): global _fail_c; _fail_c += 1; _fail_details_c.append(msg); _p(f'  ✗ FAIL   {msg}')
-def _WARN(msg): global _warn_c; _warn_c += 1; _p(f'  ⚠ WARN   {msg}')
+def _p(m=''):
+    global _buf_c; print(m); _buf_c.write(m+'\n')
+def _PASS(m): global _pass_c; _pass_c+=1; _p(f'  ✓ PASS   {m}')
+def _FAIL(m): global _fail_c; _fail_c+=1; _fail_details_c.append(m); _p(f'  ✗ FAIL   {m}')
+def _WARN(m): global _warn_c; _warn_c+=1; _p(f'  ⚠ WARN   {m}')
 def _header(t): _p(''); _p('─'*60); _p(f'  {t}'); _p('─'*60)
 
-
-def _compute_band_powers_fft(signal_data, sr, ws):
+def _bpfft(sig,sr,ws):
     if not _HAS_NUMPY: return {}
-    win  = np.hanning(ws)
-    spec = np.fft.rfft(signal_data[:ws] * win)
-    psd  = (np.abs(spec)**2) / ws
-    freqs= np.fft.rfftfreq(ws, 1.0/sr)
-    return {n: float(np.sum(psd[(freqs >= lo) & (freqs < hi)]))
-            for n, (lo, hi) in BAND_BOUNDARIES.items()}
+    w=np.hanning(ws); spec=np.fft.rfft(sig[:ws]*w); psd=(np.abs(spec)**2)/ws
+    freqs=np.fft.rfftfreq(ws,1.0/sr)
+    return {n:float(np.sum(psd[(freqs>=lo)&(freqs<hi)])) for n,(lo,hi) in BAND_BOUNDARIES.items()}
 
-
-def _check_adc_conversion():
-    _header('CHECK 1 — ADC CONVERSION')
-    scale = (VREF / ADC_RESOLUTION / PGA_GAIN) * 1e6
-    fs = ADC_RESOLUTION * scale; ms = (ADC_RESOLUTION // 2) * scale
-    _PASS(f'Full-scale {fs:.2f} µV') if 100 < fs < 300_000 else _FAIL(f'Full-scale {fs:.2f} µV out of range')
-    _PASS(f'Mid-scale {ms:.2f} µV')  if 50 < ms < 150_000  else _FAIL(f'Mid-scale {ms:.2f} µV out of range')
-    c = 50.0 / scale
-    _PASS(f'50µV → {c:.1f} counts') if c >= 1 else _FAIL(f'50µV → {c:.4f} counts (unresolvable)')
-
-
-def _check_sample_rate_and_window():
-    _header('CHECK 2 — SAMPLE RATE & WINDOW')
-    nyq = SAMPLE_RATE / 2; fr = SAMPLE_RATE / WINDOW_SIZE
-    hb  = max(hi for _, hi in BAND_BOUNDARIES.values())
-    _PASS(f'Nyquist {nyq}Hz ≥ {hb}Hz') if nyq >= hb else _FAIL(f'Nyquist {nyq}Hz < {hb}Hz')
-    edges = sorted({e for lo, hi in BAND_BOUNDARIES.values() for e in (lo, hi)})
-    mg = min(b - a for a, b in zip(edges, edges[1:]))
-    _PASS(f'Freq res {fr:.4f} ≤ {mg}Hz') if fr <= mg else _FAIL(f'Freq res {fr:.4f} > {mg}Hz')
-    _PASS(f'Overlap {OVERLAP} < {WINDOW_SIZE}') if OVERLAP < WINDOW_SIZE else _FAIL('Overlap ≥ window')
-
-
-def _check_band_boundaries():
-    _header('CHECK 3 — BAND BOUNDARY ALIGNMENT')
-    fr = SAMPLE_RATE / WINDOW_SIZE
-    freqs = [i * fr for i in range(WINDOW_SIZE // 2 + 1)]
-    for name, (lo, hi) in BAND_BOUNDARIES.items():
-        bins = [f for f in freqs if lo <= f < hi]
-        lo_e = abs(min(freqs, key=lambda f: abs(f - lo)) - lo)
-        hi_e = abs(min(freqs, key=lambda f: abs(f - hi)) - hi)
-        aligned = lo_e < fr / 2 and hi_e < fr / 2
-        ((_PASS if aligned else _WARN))(f'{name:6s} {lo}–{hi}Hz bins={len(bins)}')
-        if len(bins) < 4: _WARN(f'{name} only {len(bins)} bins')
-
-
-def _check_synthetic_signals():
-    _header('CHECK 4 — SYNTHETIC SIGNAL END-TO-END')
-    if not _HAS_NUMPY: _FAIL('numpy unavailable'); return
-    t = np.arange(WINDOW_SIZE) / SAMPLE_RATE
-    for freq, exp in [(2, 'delta'), (6, 'theta'), (10, 'alpha'), (20, 'beta'), (40, 'gamma')]:
-        sig = np.sin(2 * np.pi * freq * t)
-        pw  = _compute_band_powers_fft(sig, SAMPLE_RATE, WINDOW_SIZE)
-        dom = max(pw, key=pw.get)
-        _PASS(f'{freq}Hz → {dom}') if dom == exp else _FAIL(f'{freq}Hz expected {exp} got {dom}')
-
-
-def _check_feature_vector():
-    _header('CHECK 5 — FEATURE VECTOR')
-    if not _HAS_NUMPY: _FAIL('numpy unavailable'); return None
-    EXPECTED = ['delta', 'theta', 'alpha', 'beta', 'gamma',
-                'beta_alpha_ratio', 'alpha_theta_ratio', 'beta_theta_ratio',
-                'gamma_beta_ratio', 'beta_minus_alpha', 'alpha_plus_theta']
-    _PASS('FEATURE_NAMES length 11') if len(FEATURE_NAMES) == 11 else _FAIL(f'FEATURE_NAMES length {len(FEATURE_NAMES)}')
-    _PASS('FEATURE_NAMES order correct') if list(FEATURE_NAMES) == EXPECTED else _FAIL('FEATURE_NAMES mismatch')
-    t = np.arange(WINDOW_SIZE) / SAMPLE_RATE
-    pw = _compute_band_powers_fft(np.sin(2 * np.pi * 10 * t), SAMPLE_RATE, WINDOW_SIZE)
-    bands = EegBands(**{k: pw.get(k, 0.0) for k in ['delta', 'theta', 'alpha', 'beta', 'gamma']})
-    clf = RFClassifier(); fv = clf.build_feature_vector(bands)
-    _PASS(f'FV length {len(fv)}') if len(fv) == 11 else _FAIL(f'FV length {len(fv)}')
-    _PASS('No NaN')  if not any(math.isnan(v) for v in fv) else _FAIL('NaN in FV')
-    _PASS('No Inf')  if not any(math.isinf(v) for v in fv) else _FAIL('Inf in FV')
-    return fv
-
-
-def _find_model_directories():
-    pr = os.path.dirname(os.path.abspath(__file__))
-    dirs = []
-    dd = os.path.join(pr, 'neuromentor_data')
-    if os.path.isdir(dd):
-        for e in os.listdir(dd):
-            full = os.path.join(dd, e)
-            if os.path.isdir(full) and e.endswith('_rf_model'):
-                if os.path.exists(os.path.join(full, 'rf_eeg_model.pkl')):
-                    dirs.append(('user', e, full))
-    bd = os.path.normpath(os.path.join(pr, '..', 'rf_model', 'rf_model'))
-    if os.path.exists(os.path.join(bd, 'rf_eeg_model.pkl')):
-        dirs.append(('bundled', 'rf_model', bd))
-    return dirs
-
-
-def _check_saved_model(fv):
-    _header('CHECK 6 — SAVED MODEL')
-    if not (_HAS_NUMPY and _HAS_JOBLIB): _FAIL('numpy/joblib unavailable'); return
-    dirs = _find_model_directories()
-    if not dirs: _WARN('No model files found'); return
-    for src, lbl, dirpath in dirs:
-        _p(f'  Model: {lbl} ({src})')
-        try: clf2 = _joblib_compat.load(os.path.join(dirpath, 'rf_eeg_model.pkl')); _PASS('clf loads')
-        except Exception as e: _FAIL(f'clf load failed: {e}'); continue
-        try: sc2  = _joblib_compat.load(os.path.join(dirpath, 'rf_scaler.pkl'));    _PASS('scaler loads')
-        except Exception as e: _FAIL(f'scaler load failed: {e}'); continue
-        n = getattr(clf2, 'n_features_in_', None)
-        if n: (_PASS if n == 11 else _FAIL)(f'n_features_in_={n}')
-        if fv is not None:
-            try:
-                Xs = sc2.transform(np.array([fv]))
-                _PASS('scaler.transform ok')
-                pred = clf2.predict(Xs)[0]
-                _PASS(f'predict → {pred}')
-            except Exception as e: _FAIL(f'predict failed: {e}')
-
-
-def _check_version_drift():
-    _header('CHECK 7 — VERSION DRIFT')
-    dirs = _find_model_directories()
-    if not dirs: _WARN('No models'); return
-    cur = list(FEATURE_NAMES)
-    for _, lbl, dp2 in dirs:
-        try: clf2 = _joblib_compat.load(os.path.join(dp2, 'rf_eeg_model.pkl'))
-        except: _WARN(f'Cannot load {lbl}'); continue
-        saved = getattr(clf2, 'feature_names_in_', None)
-        if saved is None:
-            sc = os.path.join(dp2, 'feature_names.txt')
-            if os.path.exists(sc):
-                with open(sc) as f: saved = [l.strip() for l in f if l.strip()]
-        if saved: (_PASS('Feature names match') if list(saved) == cur
-                   else _FAIL('Feature name mismatch'))
-        else: _WARN('feature_names not stored in model')
-
-
-def _check_feature_formulas():
-    _header('CHECK 8 — FEATURE FORMULAS')
-    bands = EegBands(delta=2.0, theta=1.5, alpha=3.0, beta=1.0, gamma=0.5)
-    clf = RFClassifier(); fv = clf.build_feature_vector(bands)
-    expected = [2.0, 1.5, 3.0, 1.0, 0.5,
-                safe_div(1.0, 3.0), safe_div(3.0, 1.5),
-                safe_div(1.0, 1.5), safe_div(0.5, 1.0),
-                1.0 - 3.0, 3.0 + 1.5]
-    if len(fv) != 11: _FAIL(f'FV len {len(fv)}'); return
-    for i, (act, exp) in enumerate(zip(fv, expected)):
-        (_PASS if abs(act - exp) < 1e-4 else _FAIL)(
-            f'[{i}] {FEATURE_NAMES[i]} exp={exp:.4f} act={act:.4f}')
-
-
-def run_compatibility_check() -> str:
-    global _pass_c, _fail_c, _warn_c, _fail_details_c, _buf_c
-    _pass_c = _fail_c = _warn_c = 0; _fail_details_c = []; _buf_c = StringIO()
+def run_compatibility_check():
+    global _pass_c,_fail_c,_warn_c,_fail_details_c,_buf_c
+    _pass_c=_fail_c=_warn_c=0; _fail_details_c=[]; _buf_c=StringIO()
     _p('╔══════════════════════════════════════════╗')
     _p('║  NEUROMENTOR COMPATIBILITY DIAGNOSTIC    ║')
     _p('╚══════════════════════════════════════════╝')
-    for fn in [_check_adc_conversion, _check_sample_rate_and_window,
-               _check_band_boundaries, _check_synthetic_signals]:
-        try: fn()
-        except Exception as e: _FAIL(f'{fn.__name__} crashed: {e}')
-    fv = None
-    try: fv = _check_feature_vector()
-    except Exception as e: _FAIL(f'feature_vector crashed: {e}')
-    for fn in [lambda: _check_saved_model(fv), _check_version_drift, _check_feature_formulas]:
-        try: fn()
-        except Exception as e: _FAIL(f'check crashed: {e}')
-    _p('')
-    _p('═' * 44)
+    _header('ADC / SIGNAL / BAND CHECK')
+    scale=(VREF/ADC_RESOLUTION/PGA_GAIN)*1e6
+    fs=ADC_RESOLUTION*scale; ms=(ADC_RESOLUTION//2)*scale
+    (_PASS if 100<fs<300000 else _FAIL)(f'Full-scale {fs:.1f}µV')
+    (_PASS if 50<ms<150000  else _FAIL)(f'Mid-scale {ms:.1f}µV')
+    c=50.0/scale; (_PASS if c>=1 else _FAIL)(f'50µV → {c:.1f} counts')
+    nyq=SAMPLE_RATE/2; hb=max(hi for _,hi in BAND_BOUNDARIES.values())
+    (_PASS if nyq>=hb else _FAIL)(f'Nyquist {nyq}Hz ≥ {hb}Hz')
+    if _HAS_NUMPY:
+        t=np.arange(WINDOW_SIZE)/SAMPLE_RATE
+        for freq,exp in [(2,'delta'),(6,'theta'),(10,'alpha'),(20,'beta'),(40,'gamma')]:
+            pw=_bpfft(np.sin(2*np.pi*freq*t),SAMPLE_RATE,WINDOW_SIZE)
+            dom=max(pw,key=pw.get) if pw else '?'
+            (_PASS if dom==exp else _FAIL)(f'{freq}Hz → {dom}')
+    _p(''); _p('═'*44)
     _p(f'  Passed:{_pass_c}  Failed:{_fail_c}  Warnings:{_warn_c}')
-    if _fail_c == 0:
-        _p('  VERDICT: COMPATIBLE ✓')
-    else:
-        _p('  VERDICT: INCOMPATIBLE')
-        for d in _fail_details_c: _p(f'    — {d}')
+    _p('  VERDICT: COMPATIBLE ✓' if _fail_c==0 else '  VERDICT: INCOMPATIBLE')
     return _buf_c.getvalue()
 
 
-# ============================================================
+# ════════════════════════════════════════════════════════════════════════
 # AppState
-# ============================================================
+# ════════════════════════════════════════════════════════════════════════
 class UserProfile:
-    def __init__(self, username, name='', age='', notes='',
-                 created_date=None, scores=None, last_login=None):
-        self.username     = username
-        self.name         = name or username
-        self.age          = age
-        self.notes        = notes
-        self.created_date = created_date or datetime.now().isoformat()
-        self.scores       = scores or []
-        self.last_login   = last_login or datetime.now().isoformat()
-
-    def to_dict(self):
-        return dict(username=self.username, name=self.name, age=self.age,
-                    notes=self.notes, created_date=self.created_date,
-                    scores=self.scores, last_login=self.last_login)
-
+    def __init__(self,username,name='',age='',notes='',created_date=None,scores=None,last_login=None):
+        self.username=username; self.name=name or username; self.age=age; self.notes=notes
+        self.created_date=created_date or datetime.now().isoformat()
+        self.scores=scores or []; self.last_login=last_login or datetime.now().isoformat()
+    def to_dict(self): return dict(username=self.username,name=self.name,age=self.age,notes=self.notes,created_date=self.created_date,scores=self.scores,last_login=self.last_login)
     @classmethod
-    def from_dict(cls, d):
-        return cls(username=d.get('username', ''), name=d.get('name', ''),
-                   age=d.get('age', ''), notes=d.get('notes', ''),
-                   created_date=d.get('created_date'),
-                   scores=d.get('scores', []), last_login=d.get('last_login'))
+    def from_dict(cls,d): return cls(username=d.get('username',''),name=d.get('name',''),age=d.get('age',''),notes=d.get('notes',''),created_date=d.get('created_date'),scores=d.get('scores',[]),last_login=d.get('last_login'))
 
 
 class AppState(EventDispatcher):
@@ -643,2038 +333,1223 @@ class AppState(EventDispatcher):
     selected_page_index = NumericProperty(0)
     selected_port       = StringProperty('')
 
-    def __init__(self, **kwargs):
+    def __init__(self,**kwargs):
         super().__init__(**kwargs)
-        self.all_users = self._load_users()
+        self.all_users=self._load_users()
 
-    def _get_data_dir(self):
+    def _data_dir(self):
         try:
-            app = App.get_running_app()
-            if app is not None:
-                return app.user_data_dir
-        except Exception:
-            pass
+            app=App.get_running_app()
+            if app: return app.user_data_dir
+        except: pass
         return os.path.dirname(os.path.abspath(__file__))
 
     @property
-    def users_file(self):
-        return os.path.join(self._get_data_dir(), 'users.json')
+    def users_file(self): return os.path.join(self._data_dir(),'users.json')
 
     def _load_users(self):
-        if not os.path.exists(self.users_file):
-            return {}
+        if not os.path.exists(self.users_file): return {}
         try:
-            with open(self.users_file, 'r') as f:
-                return {k: UserProfile.from_dict(v) for k, v in json.load(f).items()}
-        except Exception as e:
-            print(f"Error loading users: {e}")
-            return {}
+            with open(self.users_file) as f:
+                return {k:UserProfile.from_dict(v) for k,v in json.load(f).items()}
+        except: return {}
 
     def _save_users(self):
         try:
-            d = os.path.dirname(self.users_file)
-            if d:
-                os.makedirs(d, exist_ok=True)
-            with open(self.users_file, 'w') as f:
-                json.dump({k: v.to_dict() for k, v in self.all_users.items()}, f, indent=4)
-        except Exception as e:
-            print(f"Error saving users: {e}")
-
-    def save_current_user_score(self, test_name, score):
-        if self.current_user:
-            self.current_user.scores.append(
-                {'test': test_name, 'score': score, 'date': datetime.now().isoformat()})
-            self._save_users()
+            d=os.path.dirname(self.users_file)
+            if d: os.makedirs(d,exist_ok=True)
+            with open(self.users_file,'w') as f:
+                json.dump({k:v.to_dict() for k,v in self.all_users.items()},f,indent=4)
+        except Exception as e: print(f'[AppState] save_users: {e}')
 
     def get_sorted_users(self):
-        users = list(self.all_users.values())
-        users.sort(key=lambda u: u.last_login or '', reverse=True)
-        return users
+        us=list(self.all_users.values()); us.sort(key=lambda u:u.last_login or '',reverse=True); return us
 
-    def login(self, username):
-        if username not in self.all_users:
-            self.all_users[username] = UserProfile(username=username, name=username)
-        self.all_users[username].last_login = datetime.now().isoformat()
-        self._save_users()
-        self.current_user = self.all_users[username]
-        self.selected_page_index = 0
-        self._load_rf_model(username)
-
-    def logout(self):
-        self._save_users()
-        self.current_user = None
-        self.selected_page_index = 0
-
-    def update_profile(self, name=None, age=None, notes=None):
-        if self.current_user is not None:
-            if name  is not None: self.current_user.name  = name
-            if age   is not None: self.current_user.age   = age
-            if notes is not None: self.current_user.notes = notes
+    def save_current_user_score(self,test,score):
+        if self.current_user:
+            self.current_user.scores.append({'test':test,'score':score,'date':datetime.now().isoformat()})
             self._save_users()
-            self.property('current_user').dispatch(self)
 
-    def set_selected_page(self, index):
-        self.selected_page_index = index
+    def login(self,username):
+        if username not in self.all_users: self.all_users[username]=UserProfile(username=username,name=username)
+        self.all_users[username].last_login=datetime.now().isoformat()
+        self._save_users(); self.current_user=self.all_users[username]
+        self.selected_page_index=0; self._load_rf_model(username)
 
-    def set_selected_port(self, port):
-        self.selected_port = port or ''
+    def logout(self): self._save_users(); self.current_user=None; self.selected_page_index=0
 
-    def _get_rf_model_dir(self, username):
-        d = os.path.join(self._get_data_dir(), 'neuromentor_data', f'{username}_rf_model')
-        os.makedirs(d, exist_ok=True)
-        return d
+    def update_profile(self,name=None,age=None,notes=None):
+        if self.current_user:
+            if name  is not None: self.current_user.name=name
+            if age   is not None: self.current_user.age=age
+            if notes is not None: self.current_user.notes=notes
+            self._save_users(); self.property('current_user').dispatch(self)
 
-    def _get_bundled_model_dir(self):
-        return os.path.normpath(
-            os.path.join(self._get_data_dir(), 'rf_model', 'rf_model'))
+    def set_selected_page(self,i): self.selected_page_index=i
+    def set_selected_port(self,p): self.selected_port=p or ''
 
-    def save_rf_model(self, rf_classifier=None):
-        if rf_classifier is None:
-            rf_classifier = getattr(self, 'rf_classifier', None)
-        if self.current_user and rf_classifier and rf_classifier.is_trained:
-            self.rf_classifier.save(self._get_rf_model_dir(self.current_user.username))
+    def _rf_model_dir(self,username):
+        d=os.path.join(self._data_dir(),'neuromentor_data',f'{username}_rf_model')
+        os.makedirs(d,exist_ok=True); return d
 
-    def _load_rf_model(self, username):
-        if not hasattr(self, 'rf_classifier'):
-            self.rf_classifier = RFClassifier()
-        ud = self._get_rf_model_dir(username)
-        if os.path.exists(os.path.join(ud, 'rf_eeg_model.pkl')):
-            if self.rf_classifier.load(ud): return True
-        bd = self._get_bundled_model_dir()
-        if os.path.exists(os.path.join(bd, 'rf_eeg_model.pkl')):
-            if self.rf_classifier.load(bd): return True
-        return False
+    def save_rf_model(self,rf=None):
+        rf=rf or getattr(self,'rf_classifier',None)
+        if self.current_user and rf and rf.is_trained:
+            rf.save(self._rf_model_dir(self.current_user.username))
+
+    def _load_rf_model(self,username):
+        if not hasattr(self,'rf_classifier'): self.rf_classifier=RFClassifier()
+        ud=self._rf_model_dir(username)
+        if os.path.exists(os.path.join(ud,'rf_eeg_model.pkl')) and self.rf_classifier.load(ud): return
+        bd=os.path.normpath(os.path.join(self._data_dir(),'rf_model','rf_model'))
+        if os.path.exists(os.path.join(bd,'rf_eeg_model.pkl')): self.rf_classifier.load(bd)
 
 
-# ============================================================
-# Custom UI Widgets
-# ============================================================
+# ════════════════════════════════════════════════════════════════════════
+# Custom UI widgets
+# ════════════════════════════════════════════════════════════════════════
 class ShadowButton(ButtonBehavior, Label):
     def __init__(self, **kwargs):
         self.bg_color = kwargs.pop('bg_color', kwargs.pop('background_color', theme.BUTTON_BG))
-        self.radius = kwargs.pop('radius', 12)
+        self.radius   = kwargs.pop('radius', 12)
         super().__init__(**kwargs)
-        self.bind(pos=self.update_canvas, size=self.update_canvas, state=self.update_canvas)
-        self.update_canvas()
+        self.bind(pos=self._draw, size=self._draw, state=self._draw)
+        self._draw()
 
-    def update_canvas(self, *args):
+    def _draw(self, *a):
         self.canvas.before.clear()
         with self.canvas.before:
-            base_off = 1 if self.state == 'down' else 4
+            off = 1 if self.state == 'down' else 4
             for i in range(4):
-                Color(0, 0, 0, 0.25 * (1.0 - i / 4))
-                RoundedRectangle(pos=(self.x - i + 2, self.y - base_off - i),
-                                 size=(self.width + i * 2, self.height + i * 2),
-                                 radius=[self.radius + i])
-            if self.state == 'down':
-                Color(self.bg_color[0] * .8, self.bg_color[1] * .8, self.bg_color[2] * .8, 1)
-            else:
-                Color(*self.bg_color)
+                Color(0,0,0, 0.25*(1-i/4))
+                RoundedRectangle(pos=(self.x-i+2,self.y-off-i),
+                                 size=(self.width+i*2,self.height+i*2), radius=[self.radius+i])
+            c = self.bg_color
+            if self.state == 'down': Color(c[0]*.8,c[1]*.8,c[2]*.8,1)
+            else: Color(*c)
             RoundedRectangle(pos=self.pos, size=self.size, radius=[self.radius])
 
 
 class MenuBurgerButton(ButtonBehavior, Widget):
+    """
+    Hamburger / X button.
+    Drawn large enough to be finger-friendly on mobile.
+    """
     def __init__(self, **kwargs):
-        self.color = kwargs.pop('color', theme.GOLD)
+        self.color   = kwargs.pop('color', theme.GOLD)
         self.is_open = False
         super().__init__(**kwargs)
-        self.bind(pos=self.update_canvas, size=self.update_canvas)
-        self.update_canvas()
+        self.bind(pos=self._draw, size=self._draw)
+        self._draw()
 
-    def set_open(self, is_open):
-        self.is_open = is_open
-        self.update_canvas()
+    def set_open(self, v):
+        self.is_open = v; self._draw()
 
-    def update_canvas(self, *args):
+    def _draw(self, *a):
         self.canvas.before.clear()
         with self.canvas.before:
             Color(*self.color)
-            w = self.width * 0.5
-            h = max(2, self.height * 0.08)
+            # Use a larger fraction of the button area so lines are easy to see
+            bar_w  = self.width  * 0.60
+            bar_h  = max(dp(3), self.height * 0.10)
             cx, cy = self.center_x, self.center_y
+            gap    = self.height * 0.22
+
             if not self.is_open:
-                sp2 = self.height * 0.22
-                RoundedRectangle(pos=(cx - w / 2, cy + sp2 - h / 2), size=(w, h), radius=[h / 2])
-                RoundedRectangle(pos=(cx - w / 2, cy - h / 2),        size=(w, h), radius=[h / 2])
-                RoundedRectangle(pos=(cx - w / 2, cy - sp2 - h / 2), size=(w, h), radius=[h / 2])
+                # Three horizontal bars
+                for dy in (gap, 0, -gap):
+                    RoundedRectangle(
+                        pos=(cx - bar_w/2, cy + dy - bar_h/2),
+                        size=(bar_w, bar_h),
+                        radius=[bar_h/2]
+                    )
             else:
-                Line(points=[cx - w / 2, cy - w / 2, cx + w / 2, cy + w / 2], width=h / 2, cap='round')
-                Line(points=[cx - w / 2, cy + w / 2, cx + w / 2, cy - w / 2], width=h / 2, cap='round')
+                # X  — use Lines for the diagonal strokes
+                lw = max(dp(2.5), bar_h/2)
+                Line(points=[cx-bar_w/2, cy-bar_w/2,
+                              cx+bar_w/2, cy+bar_w/2], width=lw, cap='round')
+                Line(points=[cx-bar_w/2, cy+bar_w/2,
+                              cx+bar_w/2, cy-bar_w/2], width=lw, cap='round')
 
 
 class GradientCard(BoxLayout):
     def __init__(self, accent_color=None, **kwargs):
-        kwargs.setdefault('orientation', 'vertical')
-        kwargs.setdefault('padding', [dp(12), dp(12), dp(12), dp(12)])
-        kwargs.setdefault('spacing', dp(6))
-        self.accent_color = accent_color
-        self.radius = kwargs.pop('radius', 12)
+        kwargs.setdefault('orientation','vertical')
+        kwargs.setdefault('padding',[12,12,12,12])
+        kwargs.setdefault('spacing',6)
+        self.accent_color=accent_color
+        self.radius=kwargs.pop('radius',12)
         super().__init__(**kwargs)
-        self.texture = Texture.create(size=(1, 2), colorfmt='rgba')
-        self.texture.mag_filter = 'linear'
-        self.texture.min_filter = 'linear'
-        buf = bytes([51, 46, 60, 255, 70, 65, 81, 255])
-        self.texture.blit_buffer(buf, colorfmt='rgba', bufferfmt='ubyte')
-        self.bind(pos=self.update_canvas, size=self.update_canvas)
-        self.update_canvas()
+        self.texture=Texture.create(size=(1,2),colorfmt='rgba')
+        self.texture.mag_filter='linear'; self.texture.min_filter='linear'
+        buf=bytes([51,46,60,255, 70,65,81,255])
+        self.texture.blit_buffer(buf,colorfmt='rgba',bufferfmt='ubyte')
+        self.bind(pos=self._draw, size=self._draw); self._draw()
 
-    def update_canvas(self, *args):
+    def _draw(self, *a):
         self.canvas.before.clear()
         with self.canvas.before:
             for i in range(4):
-                Color(0, 0, 0, 0.2 * (1.0 - i / 4))
-                RoundedRectangle(pos=(self.x - i + 2, self.y - 2 - i),
-                                 size=(self.width + i * 2, self.height + i * 2),
-                                 radius=[self.radius + i])
-            Color(1, 1, 1, 1)
-            RoundedRectangle(pos=self.pos, size=self.size,
-                             radius=[self.radius], texture=self.texture)
+                Color(0,0,0, 0.2*(1-i/4))
+                RoundedRectangle(pos=(self.x-i+2,self.y-2-i),
+                                 size=(self.width+i*2,self.height+i*2),
+                                 radius=[self.radius+i])
+            Color(1,1,1,1)
+            RoundedRectangle(pos=self.pos,size=self.size,radius=[self.radius],texture=self.texture)
             if self.accent_color:
                 Color(*self.accent_color)
-                RoundedRectangle(pos=(self.x + 8, self.y + self.height - 4),
-                                 size=(self.width - 16, 3), radius=[1.5])
+                RoundedRectangle(pos=(self.x+8,self.y+self.height-4),size=(self.width-16,3),radius=[1.5])
 
 
-# ============================================================
+# ════════════════════════════════════════════════════════════════════════
 # EEG Graph widgets
-# ============================================================
+# ════════════════════════════════════════════════════════════════════════
 class EegGraph(BoxLayout):
-    max_data_points = NumericProperty(256)
-    min_y = NumericProperty(0)
-    max_y = NumericProperty(4095)
-
-    def __init__(self, **kwargs):
-        super().__init__(orientation='vertical',
-                         padding=[dp(16), dp(8), dp(8), dp(8)], **kwargs)
-        self._data = deque(maxlen=256)
-
-        self._title_label = Label(
-            text='Live EEG Signal',
-            font_size=theme.font(theme.FONT_BODY_SMALL),
-            color=theme.TEXT_SECONDARY,
-            size_hint_y=None,
-            halign='left', valign='middle')
-        self._title_label.bind(
-            size=self._title_label.setter('text_size'),
-            texture_size=lambda inst, sz: setattr(inst, 'height', max(sz[1], dp(18))))
-        self.add_widget(self._title_label)
-
-        self._placeholder = Label(
-            text='Waiting for signal...',
-            font_size=theme.font(theme.FONT_BODY_REGULAR),
-            color=theme.TEXT_MUTED)
-        self.add_widget(self._placeholder)
-
-        self._graph_canvas = _GraphCanvas(
-            data=self._data, min_y=self.min_y, max_y=self.max_y)
-        self._graph_canvas.opacity = 0
-        self.add_widget(self._graph_canvas)
-
+    max_data_points=NumericProperty(256); min_y=NumericProperty(0); max_y=NumericProperty(4095)
+    def __init__(self,**kwargs):
+        super().__init__(orientation='vertical',padding=[40,10,10,10],**kwargs)
+        self._data=deque(maxlen=256)
+        tl=Label(text='Live EEG Signal',font_size=theme.font(theme.FONT_BODY_SMALL),
+                 color=theme.TEXT_SECONDARY,size_hint_y=None,height=20,halign='left',valign='middle')
+        tl.bind(size=tl.setter('text_size')); self.add_widget(tl)
+        self._ph=Label(text='Waiting for signal...',font_size=theme.font(theme.FONT_BODY_REGULAR),color=theme.TEXT_MUTED)
+        self.add_widget(self._ph)
+        self._gc=_GraphCanvas(data=self._data,min_y=0,max_y=4095); self._gc.opacity=0; self.add_widget(self._gc)
         with self.canvas.before:
-            Color(*theme.PANEL_BG)
-            self._bg_rect = Rectangle(pos=self.pos, size=self.size)
-        self.bind(pos=self._update_bg, size=self._update_bg)
-
-    def _update_bg(self, *args):
-        self._bg_rect.pos  = self.pos
-        self._bg_rect.size = self.size
-
-    def add_data_point(self, value):
-        self._data.append(value)
-        if self._placeholder.opacity > 0:
-            self._placeholder.opacity = 0
-            self._graph_canvas.opacity = 1
-        self._graph_canvas.redraw()
-
-    def clear(self):
-        self._data.clear()
-        self._placeholder.opacity = 1
-        self._graph_canvas.opacity = 0
-        self._graph_canvas.redraw()
+            Color(*theme.PANEL_BG); self._bg=Rectangle(pos=self.pos,size=self.size)
+        self.bind(pos=lambda*a:setattr(self._bg,'pos',self.pos),
+                  size=lambda*a:setattr(self._bg,'size',self.size))
+    def add_data_point(self,v):
+        self._data.append(v)
+        if self._ph.opacity>0: self._ph.opacity=0; self._gc.opacity=1
+        self._gc.redraw()
+    def clear(self): self._data.clear(); self._ph.opacity=1; self._gc.opacity=0; self._gc.redraw()
 
 
 class _GraphCanvas(Widget):
-    def __init__(self, data, min_y=0, max_y=4095, **kwargs):
-        super().__init__(**kwargs)
-        self._data  = data
-        self._min_y = min_y
-        self._max_y = max_y
-        self.bind(size=lambda *a: self.redraw(), pos=lambda *a: self.redraw())
-
+    def __init__(self,data,min_y=0,max_y=4095,**kwargs):
+        super().__init__(**kwargs); self._data=data; self._min_y=min_y; self._max_y=max_y
+        self.bind(size=lambda*a:self.redraw(),pos=lambda*a:self.redraw())
     def redraw(self):
         self.canvas.clear()
-        if not self._data or self.width <= 0 or self.height <= 0:
-            return
-        x0 = self.x + dp(16); y0 = self.y + dp(8)
-        w  = self.width - dp(20); h = self.height - dp(16)
+        if not self._data or self.width<=0 or self.height<=0: return
+        x0=self.x+40; y0=self.y+10; w=self.width-50; h=self.height-20
         with self.canvas:
             Color(*theme.BORDER_DARK)
-            for i in range(5):
-                gy = y0 + (h * i / 4)
-                Line(points=[x0, gy, x0 + w, gy], width=1)
-            for i in range(9):
-                gx = x0 + (w * i / 8)
-                Line(points=[gx, y0, gx, y0 + h], width=1)
-        data_list = list(self._data)
-        n = len(data_list)
-        if n < 2: return
-        yr = self._max_y - self._min_y or 1
-        pts = []
-        for i, val in enumerate(data_list):
-            px = x0 + w * i / (n - 1)
-            py = y0 + h * ((val - self._min_y) / yr)
-            py = max(y0, min(y0 + h, py))
-            pts.extend([px, py])
-        with self.canvas:
-            Color(*theme.TEAL)
-            Line(points=pts, width=1.5)
+            for i in range(5): gy=y0+(h*i/4); Line(points=[x0,gy,x0+w,gy],width=1)
+            for i in range(9): gx=x0+(w*i/8); Line(points=[gx,y0,gx,y0+h],width=1)
+        dl=list(self._data); n=len(dl)
+        if n<2: return
+        yr=self._max_y-self._min_y or 1; pts=[]
+        for i,v in enumerate(dl):
+            px=x0+w*i/(n-1); py=y0+h*((v-self._min_y)/yr)
+            py=max(y0,min(y0+h,py)); pts.extend([px,py])
+        with self.canvas: Color(*theme.TEAL); Line(points=pts,width=1.5)
 
 
 class BandPowerBars(BoxLayout):
-    def __init__(self, **kwargs):
-        super().__init__(orientation='vertical', padding=dp(10), spacing=dp(4), **kwargs)
-        self._bands = ['Delta', 'Theta', 'Alpha', 'Beta', 'Gamma']
-        self._bars  = {}
-        title = Label(text='EEG BAND POWERS',
-                      font_size=theme.font(theme.FONT_BODY_SMALL),
-                      color=theme.TEXT_SECONDARY, size_hint_y=None,
-                      halign='left', valign='middle')
-        title.bind(size=title.setter('text_size'),
-                   texture_size=lambda inst, sz: setattr(inst, 'height', max(sz[1], dp(18))))
-        self.add_widget(title)
-        for band in self._bands:
-            row = BoxLayout(size_hint_y=None, height=dp(24), spacing=dp(5))
-            lbl = Label(text=band, font_size=theme.font(theme.FONT_BODY_SMALL),
-                        color=theme.TEXT_MUTED, size_hint_x=None, width=dp(50),
-                        halign='left', valign='middle')
+    def __init__(self,**kwargs):
+        super().__init__(orientation='vertical',padding=10,spacing=4,**kwargs)
+        self._bars={}
+        tl=Label(text='EEG BAND POWERS',font_size=theme.font(theme.FONT_BODY_SMALL),
+                 color=theme.TEXT_SECONDARY,size_hint_y=None,height=20,halign='left',valign='middle')
+        tl.bind(size=tl.setter('text_size')); self.add_widget(tl)
+        for band in ['Delta','Theta','Alpha','Beta','Gamma']:
+            row=BoxLayout(size_hint_y=None,height=24,spacing=5)
+            lbl=Label(text=band,font_size=theme.font(theme.FONT_BODY_SMALL),color=theme.TEXT_MUTED,
+                      size_hint_x=None,width=50,halign='left',valign='middle')
             lbl.bind(size=lbl.setter('text_size'))
-            bar = _BarWidget(value=0)
-            row.add_widget(lbl); row.add_widget(bar)
-            self._bars[band] = bar
-            self.add_widget(row)
-        with self.canvas.before:
-            Color(*theme.BG_DARK)
-            self._bg = Rectangle(pos=self.pos, size=self.size)
-        self.bind(pos=self._upd, size=self._upd)
-
-    def _upd(self, *a):
-        self._bg.pos  = self.pos
-        self._bg.size = self.size
-
-    def update_values(self, vd):
-        for band, bar in self._bars.items():
-            bar.value = vd.get(band, 0)
+            bar=_BarWidget(value=0); row.add_widget(lbl); row.add_widget(bar)
+            self._bars[band]=bar; self.add_widget(row)
+        with self.canvas.before: Color(*theme.BG_DARK); self._bg=Rectangle(pos=self.pos,size=self.size)
+        self.bind(pos=lambda*a:setattr(self._bg,'pos',self.pos),
+                  size=lambda*a:setattr(self._bg,'size',self.size))
+    def update_values(self,vd):
+        for band,bar in self._bars.items(): bar.value=vd.get(band,0)
 
 
 class _BarWidget(Widget):
-    value = NumericProperty(0)
-
-    def __init__(self, **kwargs):
-        super().__init__(**kwargs)
-        self.bind(value=self._r, size=self._r, pos=self._r)
-        self._r()
-
-    def _r(self, *a):
+    value=NumericProperty(0)
+    def __init__(self,**kwargs):
+        super().__init__(**kwargs); self.bind(value=self._r,size=self._r,pos=self._r); self._r()
+    def _r(self,*a):
         self.canvas.clear()
         with self.canvas:
-            Color(0.165, 0.165, 0.165, 1)
-            Rectangle(pos=self.pos, size=self.size)
-            Color(*theme.TEAL)
-            fw = self.width * max(0, min(1, self.value))
-            if fw > 0:
-                Rectangle(pos=self.pos, size=(fw, self.height))
+            Color(0.165,0.165,0.165,1); Rectangle(pos=self.pos,size=self.size)
+            Color(*theme.TEAL); fw=self.width*max(0,min(1,self.value))
+            if fw>0: Rectangle(pos=self.pos,size=(fw,self.height))
 
 
-# ============================================================
+# ════════════════════════════════════════════════════════════════════════
 # MindVisualizer
-# ============================================================
+# ════════════════════════════════════════════════════════════════════════
 class MindVisualizer(Widget):
-    is_active    = BooleanProperty(False)
-    state_label  = StringProperty('IDLE')
-    focus_ratio  = NumericProperty(1.0)
-    stress_ratio = NumericProperty(1.0)
-
-    def __init__(self, **kwargs):
+    is_active=BooleanProperty(False); state_label=StringProperty('IDLE')
+    focus_ratio=NumericProperty(1.0); stress_ratio=NumericProperty(1.0)
+    def __init__(self,**kwargs):
         super().__init__(**kwargs)
-        self._ball_y = self._target_y = 0.5
-        self._jitter_x = self._jitter_y = 0.0
-        self._jitter_intensity = 0.0
-        self._ball_color = list(theme.TEAL)
-        self._clock_event = Clock.schedule_interval(self._animate, 1 / 60)
-        self.bind(focus_ratio=self._upd, stress_ratio=self._upd,
-                  state_label=self._upd,
-                  size=lambda *a: self._draw(),
-                  pos=lambda *a:  self._draw())
-
-    def _upd(self, *a):
-        f = max(0.5, min(2.5, self.focus_ratio))
-        self._target_y = 1.0 - ((f - 0.5) / 2.0)
-        s = max(0.5, min(2.0, self.stress_ratio))
-        self._jitter_intensity = (s - 0.5) * 0.05
-        self._ball_color = (list(theme.RED)  if self.state_label == 'Stressed' else
-                            list(theme.GOLD) if self.state_label == 'Focused'  else
-                            list(theme.TEAL))
-
-    def _animate(self, dt):
-        self._ball_y += (self._target_y - self._ball_y) * 0.05
-        self._ball_y  = max(0.1, min(0.9, self._ball_y))
-        self._jitter_x = (random.random() - 0.5) * self._jitter_intensity
-        self._jitter_y = (random.random() - 0.5) * self._jitter_intensity
-        self._draw()
-
+        self._ball_y=self._target_y=0.5; self._jitter_x=self._jitter_y=0.0
+        self._jitter_intensity=0.0; self._ball_color=list(theme.TEAL)
+        self._ce=Clock.schedule_interval(self._animate,1/60)
+        self.bind(focus_ratio=self._upd,stress_ratio=self._upd,state_label=self._upd,
+                  size=lambda*a:self._draw(),pos=lambda*a:self._draw())
+    def _upd(self,*a):
+        f=max(0.5,min(2.5,self.focus_ratio)); self._target_y=1.0-((f-0.5)/2.0)
+        s=max(0.5,min(2.0,self.stress_ratio)); self._jitter_intensity=(s-0.5)*0.05
+        self._ball_color=(list(theme.RED) if self.state_label=='Stressed' else
+                          list(theme.GOLD) if self.state_label=='Focused' else list(theme.TEAL))
+    def _animate(self,dt):
+        self._ball_y+=(self._target_y-self._ball_y)*0.05; self._ball_y=max(0.1,min(0.9,self._ball_y))
+        self._jitter_x=(random.random()-0.5)*self._jitter_intensity
+        self._jitter_y=(random.random()-0.5)*self._jitter_intensity; self._draw()
     def _draw(self):
-        self.canvas.clear()
-        w, h, x0, y0 = self.width, self.height, self.x, self.y
-        if w <= 0 or h <= 0: return
+        self.canvas.clear(); w,h,x0,y0=self.width,self.height,self.x,self.y
+        if w<=0 or h<=0: return
         with self.canvas:
-            Color(0.02, 0.02, 0.031, 1)
-            Rectangle(pos=self.pos, size=self.size)
-            Color(0.118, 0.118, 0.157, 1)
-            for gx in range(0, int(w), 60):
-                Line(points=[x0 + gx, y0, x0 + gx, y0 + h], width=1)
-            for gy in range(0, int(h), 60):
-                Line(points=[x0, y0 + gy, x0 + w, y0 + gy], width=1)
-            cx = x0 + w * 0.5 + self._jitter_x * w
-            cy = y0 + h * (1.0 - self._ball_y) + self._jitter_y * h
-            cy = max(y0 + 50, min(y0 + h - 50, cy))
-            r  = 40
-            for i in range(6, 0, -1):
-                Color(self._ball_color[0], self._ball_color[1],
-                      self._ball_color[2], 0.06 * i)
-                gr = r * (0.5 + i * 0.5)
-                Ellipse(pos=(cx - gr, cy - gr), size=(gr * 2, gr * 2))
-            Color(*self._ball_color)
-            Ellipse(pos=(cx - r, cy - r), size=(r * 2, r * 2))
-
+            Color(0.02,0.02,0.031,1); Rectangle(pos=self.pos,size=self.size)
+            Color(0.118,0.118,0.157,1)
+            for gx in range(0,int(w),60): Line(points=[x0+gx,y0,x0+gx,y0+h],width=1)
+            for gy in range(0,int(h),60): Line(points=[x0,y0+gy,x0+w,y0+gy],width=1)
+            cx=x0+w*0.5+self._jitter_x*w; cy=y0+h*(1-self._ball_y)+self._jitter_y*h
+            cy=max(y0+50,min(y0+h-50,cy)); r=40
+            for i in range(6,0,-1):
+                Color(self._ball_color[0],self._ball_color[1],self._ball_color[2],0.06*i)
+                gr=r*(0.5+i*0.5); Ellipse(pos=(cx-gr,cy-gr),size=(gr*2,gr*2))
+            Color(*self._ball_color); Ellipse(pos=(cx-r,cy-r),size=(r*2,r*2))
     def cleanup(self):
-        if hasattr(self, '_clock_event') and self._clock_event:
-            self._clock_event.cancel()
-            self._clock_event = None
-
-    def __del__(self):
-        self.cleanup()
+        if hasattr(self,'_ce') and self._ce: self._ce.cancel(); self._ce=None
+    def __del__(self): self.cleanup()
 
 
-# ============================================================
-# BreathingWidget
-# ============================================================
+# ════════════════════════════════════════════════════════════════════════
+# Task widgets (Breathing / Focus / Stroop)
+# ════════════════════════════════════════════════════════════════════════
 class BreathingWidget(BoxLayout):
-    def __init__(self, **kwargs):
-        super().__init__(orientation='vertical', padding=dp(20), spacing=dp(10), **kwargs)
-        self._step = self._score = 0
-        self._is_running = False
-        self._mode = '4-7-8'
-        self._clock_event = None
-
-        self._instruction_lbl = Label(
-            text='Ready', font_size=sp(40), color=theme.TEAL,
-            bold=True, size_hint_y=0.4)
-        self.add_widget(self._instruction_lbl)
-
-        mode_row = BoxLayout(size_hint_y=None, height=dp(44), spacing=dp(20))
-        mode_row.size_hint_x = None; mode_row.width = dp(320)
-        mode_row.pos_hint = {'center_x': 0.5}
-        self._btn_478 = ToggleButton(text='4-7-8 (Calm)', group='bm',
-            state='down', font_size=theme.font(theme.FONT_BODY_REGULAR),
-            background_color=theme.GOLD, color=theme.BG_DARK)
-        self._btn_478.bind(on_press=lambda *a: self.set_mode('4-7-8'))
-        self._btn_box = ToggleButton(text='Box (Focus)', group='bm',
-            state='normal', font_size=theme.font(theme.FONT_BODY_REGULAR),
-            background_color=theme.BORDER_DARK, color=theme.TEXT_PRIMARY)
-        self._btn_box.bind(on_press=lambda *a: self.set_mode('box'))
-        mode_row.add_widget(self._btn_478); mode_row.add_widget(self._btn_box)
-        self.add_widget(mode_row)
-
-        self._score_lbl = Label(text='Score: 0',
-            font_size=theme.font(theme.FONT_HEADING_MEDIUM),
-            color=theme.GOLD, size_hint_y=None, height=dp(40))
-        self.add_widget(self._score_lbl)
-
-        self._start_btn = ShadowButton(text='START',
-            font_size=theme.font(theme.FONT_BODY_REGULAR), bold=True,
-            size_hint_y=None, height=dp(44),
-            background_color=theme.BUTTON_BG, color=theme.GOLD)
-        self._start_btn.bind(on_press=self._toggle)
-        self.add_widget(self._start_btn)
-
-    def set_mode(self, mode):
-        self._mode = mode
-        if mode == '4-7-8':
-            self._btn_478.state = 'down'; self._btn_box.state = 'normal'
-            self._btn_478.background_color = theme.GOLD; self._btn_478.color = theme.BG_DARK
-            self._btn_box.background_color = theme.BORDER_DARK; self._btn_box.color = theme.TEXT_PRIMARY
-        else:
-            self._btn_box.state = 'down'; self._btn_478.state = 'normal'
-            self._btn_box.background_color = theme.GOLD; self._btn_box.color = theme.BG_DARK
-            self._btn_478.background_color = theme.BORDER_DARK; self._btn_478.color = theme.TEXT_PRIMARY
-
+    def __init__(self,**kwargs):
+        super().__init__(orientation='vertical',padding=20,spacing=10,**kwargs)
+        self._step=self._score=0; self._is_running=False; self._mode='4-7-8'; self._ce=None
+        self._inst=Label(text='Ready',font_size=sp(40),color=theme.TEAL,bold=True,size_hint_y=0.4)
+        self.add_widget(self._inst)
+        mr=BoxLayout(size_hint_y=None,height=40,spacing=20); mr.size_hint_x=None; mr.width=320; mr.pos_hint={'center_x':0.5}
+        self._b478=ToggleButton(text='4-7-8 (Calm)',group='bm478',state='down',font_size=theme.font(theme.FONT_BODY_REGULAR),background_color=theme.GOLD,color=theme.BG_DARK)
+        self._b478.bind(on_press=lambda*a:self.set_mode('4-7-8'))
+        self._bbox=ToggleButton(text='Box (Focus)',group='bm478',state='normal',font_size=theme.font(theme.FONT_BODY_REGULAR),background_color=theme.BORDER_DARK,color=theme.TEXT_PRIMARY)
+        self._bbox.bind(on_press=lambda*a:self.set_mode('box'))
+        mr.add_widget(self._b478); mr.add_widget(self._bbox); self.add_widget(mr)
+        self._sl=Label(text='Score: 0',font_size=theme.font(theme.FONT_HEADING_MEDIUM),color=theme.GOLD,size_hint_y=None,height=40)
+        self.add_widget(self._sl)
+        self._sb=ShadowButton(text='START',font_size=theme.font(theme.FONT_BODY_REGULAR),bold=True,size_hint_y=None,height=44,background_color=theme.BUTTON_BG,color=theme.GOLD)
+        self._sb.bind(on_press=self._toggle); self.add_widget(self._sb)
+    def set_mode(self,m):
+        self._mode=m
+        if m=='4-7-8': self._b478.state='down'; self._b478.background_color=theme.GOLD; self._b478.color=theme.BG_DARK; self._bbox.state='normal'; self._bbox.background_color=theme.BORDER_DARK; self._bbox.color=theme.TEXT_PRIMARY
+        else: self._bbox.state='down'; self._bbox.background_color=theme.GOLD; self._bbox.color=theme.BG_DARK; self._b478.state='normal'; self._b478.background_color=theme.BORDER_DARK; self._b478.color=theme.TEXT_PRIMARY
     def start_task(self): self._start()
-
-    def _toggle(self, *a):
-        self.stop() if self._is_running else self._start()
-
+    def _toggle(self,*a): self.stop() if self._is_running else self._start()
     def _start(self):
         if self._is_running: return
-        self._is_running = True; self._step = self._score = 0
-        self._start_btn.text = 'STOP'; self._start_btn.color = theme.RED
-        self._start_btn.bg_color = theme.DANGER_BUTTON_BG
-        self._clock_event = Clock.schedule_interval(self._tick, 1.0)
-
+        self._is_running=True; self._step=self._score=0
+        self._sb.text='STOP'; self._sb.color=theme.RED; self._sb.bg_color=theme.DANGER_BUTTON_BG
+        self._ce=Clock.schedule_interval(self._tick,1.0)
     def stop(self):
-        if self._clock_event: self._clock_event.cancel(); self._clock_event = None
-        self._is_running = False; self._instruction_lbl.text = 'Relax'
-        self._start_btn.text = 'START'; self._start_btn.color = theme.GOLD
-        self._start_btn.bg_color = theme.BUTTON_BG
-
-    def _tick(self, dt):
-        self._step += 1; self._score = self._step * 10
-        self._score_lbl.text = f'Score: {self._score}'
-        cl = 16 if self._mode == 'box' else 19; cur = self._step % cl
-        if self._mode == 'box':
-            if   cur < 4:  self._instruction_lbl.text = f'INHALE ({4 - cur})'
-            elif cur < 8:  self._instruction_lbl.text = f'HOLD ({8 - cur})'
-            elif cur < 12: self._instruction_lbl.text = f'EXHALE ({12 - cur})'
-            else:          self._instruction_lbl.text = f'HOLD ({16 - cur})'
+        if self._ce: self._ce.cancel(); self._ce=None
+        self._is_running=False; self._inst.text='Relax'
+        self._sb.text='START'; self._sb.color=theme.GOLD; self._sb.bg_color=theme.BUTTON_BG
+    def _tick(self,dt):
+        self._step+=1; self._score=self._step*10; self._sl.text=f'Score: {self._score}'
+        cl=16 if self._mode=='box' else 19; cur=self._step%cl
+        if self._mode=='box':
+            if cur<4: self._inst.text=f'INHALE ({4-cur})'
+            elif cur<8: self._inst.text=f'HOLD ({8-cur})'
+            elif cur<12: self._inst.text=f'EXHALE ({12-cur})'
+            else: self._inst.text=f'HOLD ({16-cur})'
         else:
-            if   cur < 4:  self._instruction_lbl.text = f'INHALE ({4 - cur})'
-            elif cur < 11: self._instruction_lbl.text = f'HOLD ({11 - cur})'
-            else:          self._instruction_lbl.text = f'EXHALE ({19 - cur})'
-
+            if cur<4: self._inst.text=f'INHALE ({4-cur})'
+            elif cur<11: self._inst.text=f'HOLD ({11-cur})'
+            else: self._inst.text=f'EXHALE ({19-cur})'
     def cleanup(self):
-        if self._clock_event: self._clock_event.cancel()
+        if self._ce: self._ce.cancel()
 
 
-# ============================================================
-# FocusWidget
-# ============================================================
-ARTICLES = [
-    'Neuroplasticity is the ability of neural networks in the brain to reorganize '
-    'themselves by creating new neural connections throughout life. This allows '
-    'neurons to compensate for injury and disease, and to adjust their activities '
-    'in response to new situations. Researchers have discovered that neuroplasticity '
-    'is not limited to childhood development but continues throughout adult life. '
-    'This groundbreaking finding has revolutionized our understanding of brain '
-    'function and has led to new therapeutic approaches for treating brain injuries, '
-    'learning disabilities, and neurodegenerative diseases.',
-
-    'Quantum entanglement is a phenomenon where two or more particles become '
-    'interconnected in such a way that the quantum state of each particle cannot '
-    'be described independently. When particles are entangled, they remain connected '
-    'across vast distances, and measuring one particle instantaneously affects the '
-    'state of the other. Today, quantum entanglement has practical applications in '
-    'quantum computing, quantum cryptography, and quantum teleportation.',
-
-    'In cognitive science, attention is the cognitive process that allows us to '
-    'focus on specific information while filtering out irrelevant stimuli. The '
-    'human brain receives countless sensory inputs every second, yet we can only '
-    'consciously process a fraction of this information. Selective attention '
-    'mechanisms help us prioritize important information and maintain focus on '
-    'relevant tasks.',
+ARTICLES=[
+    'Neuroplasticity is the ability of neural networks in the brain to reorganize themselves by creating new neural connections throughout life. This allows neurons to compensate for injury and disease, and to adjust their activities in response to new situations.',
+    'Quantum entanglement is a phenomenon where two or more particles become interconnected in such a way that the quantum state of each particle cannot be described independently of the other. Einstein famously called it spooky action at a distance.',
+    'In cognitive science, attention is the cognitive process that allows us to focus on specific information while filtering out irrelevant stimuli. Selective attention mechanisms help us prioritize important information and maintain focus on relevant tasks.',
 ]
 
 
 class FocusWidget(BoxLayout):
-    def __init__(self, **kwargs):
-        super().__init__(orientation='vertical', padding=dp(10), spacing=dp(10), **kwargs)
-        self._is_tracking = True; self._is_running = False
-
-        mode_row = BoxLayout(size_hint_y=None, height=dp(44), spacing=dp(20))
-        mode_row.size_hint_x = None; mode_row.width = dp(320)
-        mode_row.pos_hint = {'center_x': 0.5}
-        self._btn_tracking = ToggleButton(text='Visual Tracking', group='fm',
-            state='down', font_size=theme.font(theme.FONT_BODY_REGULAR),
-            background_color=theme.GOLD, color=theme.BG_DARK)
-        self._btn_tracking.bind(on_press=lambda *a: self.set_mode('tracking'))
-        self._btn_reading = ToggleButton(text='Tech Reading', group='fm',
-            state='normal', font_size=theme.font(theme.FONT_BODY_REGULAR),
-            background_color=theme.BORDER_DARK, color=theme.TEXT_PRIMARY)
-        self._btn_reading.bind(on_press=lambda *a: self.set_mode('reading'))
-        mode_row.add_widget(self._btn_tracking); mode_row.add_widget(self._btn_reading)
-        self.add_widget(mode_row)
-
-        self._tracking_view = TrackingView()
-        self._reading_view  = ReadingView()
-        self._reading_view.opacity = 0; self._reading_view.disabled = True
-        self._content = FloatLayout()
-        self._content.add_widget(self._tracking_view)
-        self._content.add_widget(self._reading_view)
-        self.add_widget(self._content)
-
-        self._start_btn = ShadowButton(text='START',
-            font_size=theme.font(theme.FONT_BODY_REGULAR), bold=True,
-            size_hint_y=None, height=dp(44),
-            background_color=theme.BUTTON_BG, color=theme.GOLD)
-        self._start_btn.bind(on_press=self._toggle)
-        self.add_widget(self._start_btn)
-
-    def set_mode(self, mode):
-        it = (mode == 'tracking'); self._is_tracking = it
-        self._btn_tracking.state = 'down' if it else 'normal'
-        self._btn_reading.state  = 'normal' if it else 'down'
-        self._btn_tracking.background_color = theme.GOLD if it else theme.BORDER_DARK
-        self._btn_tracking.color = theme.BG_DARK if it else theme.TEXT_PRIMARY
-        self._btn_reading.background_color  = theme.BORDER_DARK if it else theme.GOLD
-        self._btn_reading.color  = theme.TEXT_PRIMARY if it else theme.BG_DARK
-        self._tracking_view.opacity = 1 if it else 0; self._tracking_view.disabled = not it
-        self._reading_view.opacity  = 0 if it else 1; self._reading_view.disabled  = it
-
+    def __init__(self,**kwargs):
+        super().__init__(orientation='vertical',padding=10,spacing=10,**kwargs)
+        self._is_tracking=True; self._is_running=False
+        mr=BoxLayout(size_hint_y=None,height=40,spacing=20); mr.size_hint_x=None; mr.width=320; mr.pos_hint={'center_x':0.5}
+        self._bt=ToggleButton(text='Visual Tracking',group='fmtrack',state='down',font_size=theme.font(theme.FONT_BODY_REGULAR),background_color=theme.GOLD,color=theme.BG_DARK)
+        self._bt.bind(on_press=lambda*a:self.set_mode('tracking'))
+        self._br=ToggleButton(text='Tech Reading',group='fmtrack',state='normal',font_size=theme.font(theme.FONT_BODY_REGULAR),background_color=theme.BORDER_DARK,color=theme.TEXT_PRIMARY)
+        self._br.bind(on_press=lambda*a:self.set_mode('reading'))
+        mr.add_widget(self._bt); mr.add_widget(self._br); self.add_widget(mr)
+        self._tv=TrackingView(); self._rv=ReadingView(); self._rv.opacity=0; self._rv.disabled=True
+        self._ca=FloatLayout(); self._ca.add_widget(self._tv); self._ca.add_widget(self._rv); self.add_widget(self._ca)
+        self._sb=ShadowButton(text='START',font_size=theme.font(theme.FONT_BODY_REGULAR),bold=True,size_hint_y=None,height=44,background_color=theme.BUTTON_BG,color=theme.GOLD)
+        self._sb.bind(on_press=self._toggle); self.add_widget(self._sb)
+    def set_mode(self,m):
+        it=(m=='tracking'); self._is_tracking=it
+        self._bt.state='down' if it else 'normal'; self._bt.background_color=theme.GOLD if it else theme.BORDER_DARK; self._bt.color=theme.BG_DARK if it else theme.TEXT_PRIMARY
+        self._br.state='normal' if it else 'down'; self._br.background_color=theme.BORDER_DARK if it else theme.GOLD; self._br.color=theme.TEXT_PRIMARY if it else theme.BG_DARK
+        self._tv.opacity=1 if it else 0; self._tv.disabled=not it; self._rv.opacity=0 if it else 1; self._rv.disabled=it
     def start_task(self):
         if not self._is_running: self._toggle()
-
     def stop(self):
         if self._is_running: self._toggle()
+    def _toggle(self,*a):
+        self._is_running=not self._is_running
+        if self._is_running: self._sb.text='STOP'; self._sb.color=theme.RED; self._sb.bg_color=theme.DANGER_BUTTON_BG; self._tv.start(); self._rv.new_article()
+        else: self._sb.text='START'; self._sb.color=theme.GOLD; self._sb.bg_color=theme.BUTTON_BG; self._tv.stop()
+    def cleanup(self): self._tv.stop()
 
-    def _toggle(self, *a):
-        self._is_running = not self._is_running
-        if self._is_running:
-            self._start_btn.text = 'STOP'; self._start_btn.color = theme.RED
-            self._start_btn.bg_color = theme.DANGER_BUTTON_BG
-            self._tracking_view.start(); self._reading_view.new_article()
-        else:
-            self._start_btn.text = 'START'; self._start_btn.color = theme.GOLD
-            self._start_btn.bg_color = theme.BUTTON_BG
-            self._tracking_view.stop()
 
-    def cleanup(self): self._tracking_view.stop()
+from kivy.uix.floatlayout import FloatLayout as _FL
 
 
 class TrackingView(Widget):
-    def __init__(self, **kwargs):
-        super().__init__(**kwargs)
-        self._ball_x = self._ball_y = 0.5; self._clock_event = None
-        self.bind(size=self._draw, pos=self._draw); self._draw()
-
+    def __init__(self,**kwargs):
+        super().__init__(**kwargs); self._bx=self._by=0.5; self._ce=None
+        self.bind(size=self._draw,pos=self._draw); self._draw()
     def start(self):
-        if self._clock_event: self._clock_event.cancel()
-        self._clock_event = Clock.schedule_interval(self._move, 1 / 30)
-
+        if self._ce: self._ce.cancel()
+        self._ce=Clock.schedule_interval(self._move,1/30)
     def stop(self):
-        if self._clock_event: self._clock_event.cancel(); self._clock_event = None
-
-    def _move(self, dt):
-        self._ball_x = max(0.05, min(0.95, self._ball_x + (random.random() - 0.5) * 0.02))
-        self._ball_y = max(0.05, min(0.95, self._ball_y + (random.random() - 0.5) * 0.02))
-        self._draw()
-
-    def _draw(self, *a):
-        self.canvas.clear()
-        w, h = self.width, self.height
-        if w <= 0 or h <= 0: return
-        cx = self.x + self._ball_x * w; cy = self.y + self._ball_y * h
+        if self._ce: self._ce.cancel(); self._ce=None
+    def _move(self,dt):
+        self._bx=max(0.05,min(0.95,self._bx+(random.random()-0.5)*0.02))
+        self._by=max(0.05,min(0.95,self._by+(random.random()-0.5)*0.02)); self._draw()
+    def _draw(self,*a):
+        self.canvas.clear(); w,h=self.width,self.height
+        if w<=0 or h<=0: return
+        cx=self.x+self._bx*w; cy=self.y+self._by*h
         with self.canvas:
-            Color(0, 0, 0, 1); Rectangle(pos=self.pos, size=self.size)
-            for i in range(4, 0, -1):
-                Color(theme.GOLD[0], theme.GOLD[1], theme.GOLD[2], 0.12 * i)
-                r = 15 + i * 8; Ellipse(pos=(cx - r, cy - r), size=(r * 2, r * 2))
-            Color(*theme.GOLD); Ellipse(pos=(cx - 15, cy - 15), size=(30, 30))
+            Color(0,0,0,1); Rectangle(pos=self.pos,size=self.size)
+            for i in range(4,0,-1):
+                Color(theme.GOLD[0],theme.GOLD[1],theme.GOLD[2],0.12*i); r=15+i*8; Ellipse(pos=(cx-r,cy-r),size=(r*2,r*2))
+            Color(*theme.GOLD); Ellipse(pos=(cx-15,cy-15),size=(30,30))
 
 
 class ReadingView(BoxLayout):
-    def __init__(self, **kwargs):
-        super().__init__(orientation='vertical', padding=dp(15), spacing=dp(10), **kwargs)
-        hdr = Label(text='READ CAREFULLY:',
-            font_size=theme.font(theme.FONT_BODY_SMALL), color=theme.TEXT_SECONDARY,
-            size_hint_y=None, halign='left', valign='middle')
-        hdr.bind(size=hdr.setter('text_size'),
-                 texture_size=lambda inst, sz: setattr(inst, 'height', max(sz[1], dp(20))))
-        self.add_widget(hdr)
-        scroll = ScrollView()
-        self._art = Label(text=random.choice(ARTICLES),
-            font_size=theme.font(theme.FONT_BODY_LARGE),
-            color=theme.TEAL, markup=False, halign='left', valign='top',
-            size_hint_y=None)
-        self._art.bind(texture_size=lambda inst, sz: setattr(inst, 'height', sz[1]),
-                       width=lambda inst, w: setattr(inst, 'text_size', (w, None)))
-        scroll.add_widget(self._art); self.add_widget(scroll)
-        with self.canvas.before:
-            Color(0.067, 0.067, 0.067, 1)
-            self._bg = Rectangle(pos=self.pos, size=self.size)
-        self.bind(pos=self._u, size=self._u)
-
-    def _u(self, *a): self._bg.pos = self.pos; self._bg.size = self.size
-    def new_article(self): self._art.text = random.choice(ARTICLES)
+    def __init__(self,**kwargs):
+        super().__init__(orientation='vertical',padding=15,spacing=10,**kwargs)
+        h=Label(text='READ CAREFULLY:',font_size=theme.font(theme.FONT_BODY_SMALL),color=theme.TEXT_SECONDARY,size_hint_y=None,height=20,halign='left',valign='middle')
+        h.bind(size=h.setter('text_size')); self.add_widget(h)
+        sc=ScrollView()
+        self._art=Label(text=random.choice(ARTICLES),font_size=theme.font(theme.FONT_BODY_LARGE),color=theme.TEAL,markup=False,halign='left',valign='top',size_hint_y=None)
+        self._art.bind(texture_size=lambda inst,sz:setattr(inst,'height',sz[1]),
+                       width=lambda inst,w:setattr(inst,'text_size',(w,None)))
+        sc.add_widget(self._art); self.add_widget(sc)
+        with self.canvas.before: Color(0.067,0.067,0.067,1); self._bg=Rectangle(pos=self.pos,size=self.size)
+        self.bind(pos=lambda*a:setattr(self._bg,'pos',self.pos),size=lambda*a:setattr(self._bg,'size',self.size))
+    def new_article(self): self._art.text=random.choice(ARTICLES)
 
 
-# ============================================================
-# StroopWidget
-# ============================================================
 class StroopWidget(BoxLayout):
-    def __init__(self, **kwargs):
-        super().__init__(orientation='vertical', padding=dp(20), spacing=dp(10), **kwargs)
-        self._score = 0; self._is_running = False; self._is_math_mode = False
-        self._clock_event = None
-        self._current_ink_name = 'BLUE'; self._math_answer = 0
-        self._colors = ['RED', 'BLUE', 'GREEN', 'YELLOW']
-        self._color_map = {'RED': (1, 0, 0, 1), 'BLUE': (0, 0, 1, 1),
-                           'GREEN': (0, 1, 0, 1), 'YELLOW': (1, 1, 0, 1)}
-
-        self._display_lbl = Label(text='BLUE', font_size=sp(50), bold=True,
-            color=(0, 0, 1, 1), size_hint_y=0.35)
-        self.add_widget(self._display_lbl)
-
-        mode_row = BoxLayout(size_hint_y=None, height=dp(44), spacing=dp(20))
-        mode_row.size_hint_x = None; mode_row.width = dp(280)
-        mode_row.pos_hint = {'center_x': 0.5}
-        self._btn_stroop = ToggleButton(text='Stroop', group='sm', state='down',
-            font_size=theme.font(theme.FONT_BODY_REGULAR),
-            background_color=theme.GOLD, color=theme.BG_DARK)
-        self._btn_stroop.bind(on_press=lambda *a: self.set_mode('stroop'))
-        self._btn_math = ToggleButton(text='Rapid Math', group='sm', state='normal',
-            font_size=theme.font(theme.FONT_BODY_REGULAR),
-            background_color=theme.BORDER_DARK, color=theme.TEXT_PRIMARY)
-        self._btn_math.bind(on_press=lambda *a: self.set_mode('math'))
-        mode_row.add_widget(self._btn_stroop); mode_row.add_widget(self._btn_math)
-        self.add_widget(mode_row)
-
-        self._stroop_row = BoxLayout(size_hint_y=None, height=dp(50), spacing=dp(8))
+    def __init__(self,**kwargs):
+        super().__init__(orientation='vertical',padding=20,spacing=10,**kwargs)
+        self._score=0; self._is_running=False; self._is_math_mode=False; self._ce=None
+        self._ink='BLUE'; self._math_ans=0
+        self._colors=['RED','BLUE','GREEN','YELLOW']
+        self._cmap={'RED':(1,0,0,1),'BLUE':(0,0,1,1),'GREEN':(0,1,0,1),'YELLOW':(1,1,0,1)}
+        self._dl=Label(text='BLUE',font_size=sp(50),bold=True,color=(0,0,1,1),size_hint_y=0.35); self.add_widget(self._dl)
+        mr=BoxLayout(size_hint_y=None,height=40,spacing=20); mr.size_hint_x=None; mr.width=280; mr.pos_hint={'center_x':0.5}
+        self._bs=ToggleButton(text='Stroop',group='smstroop',state='down',font_size=theme.font(theme.FONT_BODY_REGULAR),background_color=theme.GOLD,color=theme.BG_DARK)
+        self._bs.bind(on_press=lambda*a:self.set_mode('stroop'))
+        self._bm=ToggleButton(text='Rapid Math',group='smstroop',state='normal',font_size=theme.font(theme.FONT_BODY_REGULAR),background_color=theme.BORDER_DARK,color=theme.TEXT_PRIMARY)
+        self._bm.bind(on_press=lambda*a:self.set_mode('math'))
+        mr.add_widget(self._bs); mr.add_widget(self._bm); self.add_widget(mr)
+        self._sr=BoxLayout(size_hint_y=None,height=50,spacing=8)
         for c in self._colors:
-            btn = Button(text=c, font_size=sp(12), bold=True,
-                         background_color=self._color_map[c], color=(0, 0, 0, 1),
-                         size_hint_x=None, width=dp(80))
-            btn.bind(on_press=lambda inst, cn=c: self._check_stroop(cn))
-            self._stroop_row.add_widget(btn)
-        self.add_widget(self._stroop_row)
-
-        self._math_row = BoxLayout(size_hint=(None, None), size=(dp(300), dp(45)),
-                                   pos_hint={'center_x': 0.5}, spacing=dp(10))
-        self._math_input = TextInput(hint_text='Answer',
-            font_size=theme.font(theme.FONT_HEADING_MEDIUM),
-            multiline=False, input_filter='int',
-            size_hint=(None, 1), width=dp(180),
-            background_color=theme.INPUT_BG, foreground_color=theme.TEXT_PRIMARY)
-        self._math_input.bind(on_text_validate=lambda *a: self._check_math())
-        self._math_submit = ShadowButton(text='SUBMIT',
-            font_size=theme.font(theme.FONT_BODY_REGULAR), bold=True,
-            bg_color=theme.TEAL, color=theme.BG_DARK,
-            size_hint=(None, 1), width=dp(110))
-        self._math_submit.bind(on_press=lambda *a: self._check_math())
-        self._math_row.add_widget(self._math_input)
-        self._math_row.add_widget(self._math_submit)
-        self._math_row.opacity = 0; self._math_row.disabled = True
-        self.add_widget(self._math_row)
-
-        self._score_lbl = Label(text='Score: 0',
-            font_size=theme.font(theme.FONT_HEADING_MEDIUM),
-            color=theme.GOLD, size_hint_y=None, height=dp(40))
-        self.add_widget(self._score_lbl)
-
-        self._start_btn = ShadowButton(text='START',
-            font_size=theme.font(theme.FONT_BODY_REGULAR), bold=True,
-            size_hint_y=None, height=dp(44),
-            background_color=theme.BUTTON_BG, color=theme.GOLD)
-        self._start_btn.bind(on_press=self._toggle)
-        self.add_widget(self._start_btn)
-
-    def set_mode(self, mode):
-        im = (mode == 'math'); self._is_math_mode = im
-        self._btn_math.state   = 'down' if im else 'normal'
-        self._btn_stroop.state = 'normal' if im else 'down'
-        self._btn_math.background_color   = theme.GOLD if im else theme.BORDER_DARK
-        self._btn_math.color              = theme.BG_DARK if im else theme.TEXT_PRIMARY
-        self._btn_stroop.background_color = theme.BORDER_DARK if im else theme.GOLD
-        self._btn_stroop.color            = theme.TEXT_PRIMARY if im else theme.BG_DARK
-        self._stroop_row.opacity  = 0 if im else 1; self._stroop_row.disabled  = im
-        self._math_row.opacity    = 1 if im else 0; self._math_row.disabled    = not im
+            btn=Button(text=c,font_size=sp(12),bold=True,background_color=self._cmap[c],color=(0,0,0,1),size_hint_x=None,width=80)
+            btn.bind(on_press=lambda inst,cn=c:self._check_stroop(cn)); self._sr.add_widget(btn)
+        self.add_widget(self._sr)
+        self._mr=BoxLayout(size_hint=(None,None),size=(300,45),pos_hint={'center_x':0.5},spacing=10)
+        self._mi=TextInput(hint_text='Answer',font_size=theme.font(theme.FONT_HEADING_MEDIUM),multiline=False,input_filter='int',size_hint=(None,1),width=180,background_color=theme.INPUT_BG,foreground_color=theme.TEXT_PRIMARY)
+        self._mi.bind(on_text_validate=lambda*a:self._check_math())
+        self._msub=ShadowButton(text='SUBMIT',font_size=theme.font(theme.FONT_BODY_REGULAR),bold=True,bg_color=theme.TEAL,color=theme.BG_DARK,size_hint=(None,1),width=110)
+        self._msub.bind(on_press=lambda*a:self._check_math())
+        self._mr.add_widget(self._mi); self._mr.add_widget(self._msub); self._mr.opacity=0; self._mr.disabled=True; self.add_widget(self._mr)
+        self._sl=Label(text='Score: 0',font_size=theme.font(theme.FONT_HEADING_MEDIUM),color=theme.GOLD,size_hint_y=None,height=40); self.add_widget(self._sl)
+        self._sb=ShadowButton(text='START',font_size=theme.font(theme.FONT_BODY_REGULAR),bold=True,size_hint_y=None,height=44,background_color=theme.BUTTON_BG,color=theme.GOLD)
+        self._sb.bind(on_press=self._toggle); self.add_widget(self._sb)
+    def set_mode(self,m):
+        im=(m=='math'); self._is_math_mode=im
+        self._bm.state='down' if im else 'normal'; self._bm.background_color=theme.GOLD if im else theme.BORDER_DARK; self._bm.color=theme.BG_DARK if im else theme.TEXT_PRIMARY
+        self._bs.state='normal' if im else 'down'; self._bs.background_color=theme.BORDER_DARK if im else theme.GOLD; self._bs.color=theme.TEXT_PRIMARY if im else theme.BG_DARK
+        self._sr.opacity=0 if im else 1; self._sr.disabled=im; self._mr.opacity=1 if im else 0; self._mr.disabled=not im
         if self._is_running: self._next_round()
-
     def start_task(self): self._start()
-
-    def _toggle(self, *a):
-        self.stop() if self._is_running else self._start()
-
+    def _toggle(self,*a): self.stop() if self._is_running else self._start()
     def _start(self):
         if self._is_running: return
-        self._is_running = True; self._score = 0; self._score_lbl.text = 'Score: 0'
-        self._start_btn.text = 'STOP'; self._start_btn.color = theme.RED
-        self._start_btn.bg_color = theme.DANGER_BUTTON_BG
-        self._next_round()
-        self._clock_event = Clock.schedule_interval(lambda dt: self._next_round(), 3.0)
-
+        self._is_running=True; self._score=0; self._sl.text='Score: 0'
+        self._sb.text='STOP'; self._sb.color=theme.RED; self._sb.bg_color=theme.DANGER_BUTTON_BG
+        self._next_round(); self._ce=Clock.schedule_interval(lambda dt:self._next_round(),3.0)
     def stop(self):
-        if self._clock_event: self._clock_event.cancel(); self._clock_event = None
-        self._is_running = False
-        self._start_btn.text = 'START'; self._start_btn.color = theme.GOLD
-        self._start_btn.bg_color = theme.BUTTON_BG
-
+        if self._ce: self._ce.cancel(); self._ce=None
+        self._is_running=False; self._sb.text='START'; self._sb.color=theme.GOLD; self._sb.bg_color=theme.BUTTON_BG
     def _next_round(self):
         if self._is_math_mode:
-            a = random.randint(10, 99); b = random.randint(10, 99)
-            ia = random.choice([True, False])
-            self._math_answer = a + b if ia else a - b
-            self._display_lbl.text = f'{a} {"+" if ia else "-"} {b} = ?'
-            self._display_lbl.color = theme.RED; self._math_input.text = ''
+            a,b=random.randint(10,99),random.randint(10,99); ia=random.choice([True,False])
+            self._math_ans=a+b if ia else a-b; self._dl.text=f'{a} {"+" if ia else "-"} {b} = ?'; self._dl.color=theme.RED; self._mi.text=''
         else:
-            word = random.choice(self._colors); ink = random.choice(self._colors)
-            self._current_ink_name = ink
-            self._display_lbl.text = word; self._display_lbl.color = self._color_map[ink]
-
-    def _check_stroop(self, cn):
+            word=random.choice(self._colors); ink=random.choice(self._colors); self._ink=ink; self._dl.text=word; self._dl.color=self._cmap[ink]
+    def _check_stroop(self,cn):
         if not self._is_running: return
-        if cn == self._current_ink_name:
-            self._score += 50; self._score_lbl.text = f'Score: {self._score}'
-        if self._clock_event: self._clock_event.cancel()
-        self._next_round()
-        self._clock_event = Clock.schedule_interval(lambda dt: self._next_round(), 3.0)
-
+        if cn==self._ink: self._score+=50; self._sl.text=f'Score: {self._score}'
+        if self._ce: self._ce.cancel()
+        self._next_round(); self._ce=Clock.schedule_interval(lambda dt:self._next_round(),3.0)
     def _check_math(self):
         if not self._is_running: return
-        try: ans = int(self._math_input.text)
-        except: ans = 0
-        if ans == self._math_answer:
-            self._score += 50; self._score_lbl.text = f'Score: {self._score}'
-        if self._clock_event: self._clock_event.cancel()
-        self._next_round()
-        self._clock_event = Clock.schedule_interval(lambda dt: self._next_round(), 3.0)
-
+        try: ans=int(self._mi.text)
+        except: ans=0
+        if ans==self._math_ans: self._score+=50; self._sl.text=f'Score: {self._score}'
+        if self._ce: self._ce.cancel()
+        self._next_round(); self._ce=Clock.schedule_interval(lambda dt:self._next_round(),3.0)
     def cleanup(self):
-        if self._clock_event: self._clock_event.cancel()
+        if self._ce: self._ce.cancel()
 
 
-# ============================================================
-# Voice Assistant Mixin — shared by DashboardScreen & Phase2NotesScreen
-# ============================================================
-class VoiceAssistantMixin:
+# ════════════════════════════════════════════════════════════════════════
+# Voice / Transcriber mixin
+# ════════════════════════════════════════════════════════════════════════
+class VoiceMixin:
     """
-    Drop-in mixin providing full ESP32 → Whisper → Ollama pipeline.
-
-    The host class must set:
-        self._app_state  — AppState instance
-    And expose a label via:
-        self._voice_response_label — AutoLabel for displaying responses
+    Shared ESP32→Whisper→Ollama pipeline.
+    Host must define: self._app_state, self._voice_lbl (AutoLabel for responses).
     """
+    def _init_voice(self):
+        self._vthread=None; self._wmodel=None
+        # TCP listener for whisper_server.py push on port 5050
+        threading.Thread(target=self._tcp_listen, daemon=True).start()
 
-    def _init_voice_assistant(self):
-        """Call once at end of __init__ to set up voice state."""
-        self._voice_thread   = None
-        self._whisper_model  = None   # lazy-loaded
-        self._tcp_listener   = None   # background TCP socket for Whisper server push
-        self._voice_tcp_port = 5050   # NeuroMentor TCP receive port (matches whisper_server.py)
-        self._start_tcp_listener()
-
-    # ── TCP listener for Whisper-server push (port 5050) ─────────────
-    def _start_tcp_listener(self):
-        """Listen for text forwarded by whisper_server.py on port 5050."""
-        def _listen():
-            try:
-                srv = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-                srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-                srv.bind(('0.0.0.0', self._voice_tcp_port))
-                srv.listen(3)
-                srv.settimeout(1.0)
-                print(f'[VoiceAssistant] TCP listener ready on port {self._voice_tcp_port}')
-                while True:
-                    try:
-                        conn, addr = srv.accept()
-                        data = b''
-                        conn.settimeout(2.0)
-                        try:
-                            while True:
-                                chunk = conn.recv(4096)
-                                if not chunk: break
-                                data += chunk
-                        except Exception:
-                            pass
-                        finally:
-                            conn.close()
-                        if data:
-                            text = data.decode('utf-8', errors='replace').strip()
-                            if text:
-                                print(f'[VoiceAssistant] Received via TCP: {text}')
-                                self._update_voice_response(f'Transcribed: {text}\nQuerying Ollama...')
-                                threading.Thread(
-                                    target=self._query_ollama_and_display,
-                                    args=(text,), daemon=True).start()
-                    except socket.timeout:
-                        continue
-                    except Exception as e:
-                        print(f'[VoiceAssistant TCP] {e}')
-            except Exception as e:
-                print(f'[VoiceAssistant TCP bind] {e}')
-
-        t = threading.Thread(target=_listen, daemon=True)
-        t.start()
-
-    # ── Button handler ────────────────────────────────────────────────
-    def start_esp32_voice(self, *args):
-        """Triggered by the voice button press."""
-        if self._voice_thread is not None and self._voice_thread.is_alive():
-            self._update_voice_response('Already processing a request...')
-            return
-        self._update_voice_response('Connecting to ESP32...')
-        self._voice_thread = threading.Thread(target=self._process_voice_pipeline, daemon=True)
-        self._voice_thread.start()
-
-    # ── Main pipeline (background thread) ────────────────────────────
-    def _process_voice_pipeline(self):
-        """Full pipeline: receive audio → WAV → Whisper → Ollama → UI."""
+    def _tcp_listen(self):
         try:
-            self._update_voice_response('Reading audio from ESP32...')
-            audio_bytes = self._receive_esp32_audio()
-
-            if not audio_bytes:
-                # If no ESP32 audio, check if Whisper server already forwarded text via TCP
-                self._update_voice_response(
-                    'No ESP32 audio received.\n'
-                    'If using whisper_server.py (port 9999), audio is handled externally.\n'
-                    'Waiting for transcription on port 5050...')
-                return
-
-            # Save WAV — always use user_data_dir for Android compatibility
-            wav_path = os.path.join(
-                App.get_running_app().user_data_dir,
-                'neuromentor_voice_query.wav')
-            self._update_voice_response('Saving audio...')
-            self._write_wav(wav_path, bytes(audio_bytes))
-
-            # Transcribe with Whisper
-            self._update_voice_response('Transcribing with Whisper...')
-            text = self._transcribe_whisper(wav_path)
-            if not text:
-                self._update_voice_response('Whisper returned empty transcription.')
-                return
-
-            self._update_voice_response(f'You said: {text}\n\nContacting Ollama...')
-            self._query_ollama_and_display(text)
-
-        except Exception as exc:
-            print(f'[VoiceAssistant pipeline] {exc}')
-            traceback.print_exc()
-            self._update_voice_response(f'Pipeline error: {str(exc)[:120]}')
-
-    # ── ESP32 audio reception ─────────────────────────────────────────
-    def _receive_esp32_audio(self) -> bytes:
-        """
-        Try Serial first (COM ports / /dev/ttyUSB*), then TCP socket.
-        Returns raw 16kHz 16-bit mono PCM bytes or b''.
-        """
-        expected_bytes = 16000 * 2 * 5  # 5 seconds
-        audio = bytearray()
-        start = time.time()
-        timeout = 12  # seconds
-
-        # --- Serial ports ---
-        serial_ports = []
-        if getattr(self._app_state, 'selected_port', None):
-            serial_ports.append(self._app_state.selected_port)
-        if platform == 'android':
-            serial_ports += ['/dev/ttyUSB0', '/dev/ttyUSB1', '/dev/ttyS0']
-        else:
-            serial_ports += ['COM3', 'COM4', 'COM5', 'COM6',
-                             '/dev/ttyUSB0', '/dev/ttyUSB1']
-
-        if _HAS_SERIAL:
-            for port in serial_ports:
+            srv=socket.socket(socket.AF_INET,socket.SOCK_STREAM)
+            srv.setsockopt(socket.SOL_SOCKET,socket.SO_REUSEADDR,1)
+            srv.bind(('0.0.0.0',5050)); srv.listen(3); srv.settimeout(1.0)
+            while True:
                 try:
-                    with _serial_mod.Serial(port, 115200, timeout=1) as ser:
-                        print(f'[ESP32] Serial connected: {port}')
-                        audio = bytearray()
-                        while len(audio) < expected_bytes and (time.time() - start) < timeout:
-                            chunk = ser.read(min(4096, expected_bytes - len(audio)))
-                            if chunk:
-                                audio.extend(chunk)
-                    if audio:
-                        print(f'[ESP32] Serial received {len(audio)} bytes from {port}')
-                        return bytes(audio)
-                except Exception as exc:
-                    print(f'[ESP32 Serial] {port}: {exc}')
+                    conn,_=srv.accept(); data=b''; conn.settimeout(2.0)
+                    try:
+                        while True:
+                            chunk=conn.recv(4096)
+                            if not chunk: break
+                            data+=chunk
+                    except: pass
+                    finally: conn.close()
+                    if data:
+                        text=data.decode('utf-8',errors='replace').strip()
+                        if text:
+                            self._set_voice_lbl(f'Transcribed: {text}\nQuerying Ollama...')
+                            threading.Thread(target=self._ollama,args=(text,),daemon=True).start()
+                except socket.timeout: continue
+                except Exception as e: print(f'[VoiceTCP] {e}')
+        except Exception as e: print(f'[VoiceTCP bind] {e}')
 
-        # --- TCP sockets ---
-        tcp_targets = [
-            ('192.168.4.1', 5000),   # ESP32 AP default IP
-            ('192.168.4.2', 5000),
-            ('192.168.1.100', 5000),
-            ('127.0.0.1', 5000),
-        ]
-        for host, port in tcp_targets:
+    def _btn_voice(self, *a):
+        if self._vthread and self._vthread.is_alive():
+            self._set_voice_lbl('Already processing...'); return
+        self._set_voice_lbl('Connecting to ESP32...')
+        self._vthread=threading.Thread(target=self._pipeline,daemon=True); self._vthread.start()
+
+    def _pipeline(self):
+        try:
+            self._set_voice_lbl('Reading audio from ESP32...')
+            raw=self._get_audio()
+            if not raw:
+                self._set_voice_lbl('No audio received.\nIf using whisper_server.py, text arrives automatically on port 5050.'); return
+            path=os.path.join(App.get_running_app().user_data_dir,'nm_voice.wav')
+            with wave.open(path,'wb') as wf:
+                wf.setnchannels(1); wf.setsampwidth(2); wf.setframerate(16000); wf.writeframes(raw)
+            self._set_voice_lbl('Transcribing...')
+            text=self._transcribe(path)
+            if not text: self._set_voice_lbl('Whisper returned empty result.'); return
+            self._set_voice_lbl(f'You said: {text}\n\nQuerying Ollama...'); self._ollama(text)
+        except Exception as e:
+            traceback.print_exc(); self._set_voice_lbl(f'Error: {str(e)[:150]}')
+
+    def _get_audio(self):
+        exp=16000*2*5; audio=bytearray(); t0=time.time()
+        ports=[]
+        if getattr(self._app_state,'selected_port',None): ports.append(self._app_state.selected_port)
+        if platform=='android': ports+=['/dev/ttyUSB0','/dev/ttyUSB1','/dev/ttyS0']
+        else: ports+=['COM3','COM4','COM5','/dev/ttyUSB0','/dev/ttyUSB1']
+        if _HAS_SERIAL:
+            for port in ports:
+                try:
+                    with _serial_mod.Serial(port,115200,timeout=1) as ser:
+                        while len(audio)<exp and time.time()-t0<12:
+                            c=ser.read(min(4096,exp-len(audio)))
+                            if c: audio.extend(c)
+                    if audio: return bytes(audio)
+                except Exception as e: print(f'[Serial] {port}: {e}')
+        for host,p in [('192.168.4.1',5000),('127.0.0.1',5000)]:
             try:
-                with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
-                    sock.settimeout(4)
-                    sock.connect((host, port))
-                    print(f'[ESP32] TCP connected: {host}:{port}')
-                    audio = bytearray()
-                    while len(audio) < expected_bytes and (time.time() - start) < timeout:
-                        remaining = expected_bytes - len(audio)
-                        chunk = sock.recv(min(4096, remaining))
-                        if not chunk:
-                            break
-                        audio.extend(chunk)
-                if audio:
-                    print(f'[ESP32] TCP received {len(audio)} bytes from {host}:{port}')
-                    return bytes(audio)
-            except Exception as exc:
-                print(f'[ESP32 TCP] {host}:{port}: {exc}')
-
+                with socket.socket() as s:
+                    s.settimeout(4); s.connect((host,p))
+                    while len(audio)<exp and time.time()-t0<12:
+                        c=s.recv(min(4096,exp-len(audio)))
+                        if not c: break
+                        audio.extend(c)
+                if audio: return bytes(audio)
+            except: pass
         return b''
 
-    # ── WAV writer ────────────────────────────────────────────────────
-    def _write_wav(self, path: str, pcm_bytes: bytes):
-        with wave.open(path, 'wb') as wf:
-            wf.setnchannels(1)
-            wf.setsampwidth(2)
-            wf.setframerate(16000)
-            wf.writeframes(pcm_bytes)
+    def _transcribe(self, path):
+        if not _HAS_WHISPER: return '[whisper not installed]'
+        if not self._wmodel:
+            self._set_voice_lbl('Loading Whisper model...')
+            self._wmodel=_whisper_mod.load_model('base')
+        return _whisper_mod.load_model('base').transcribe(path).get('text','').strip() if not self._wmodel else self._wmodel.transcribe(path).get('text','').strip()
 
-    # ── Whisper transcription ─────────────────────────────────────────
-    def _transcribe_whisper(self, path: str) -> str:
-        if not _HAS_WHISPER:
-            return '[whisper not installed]'
-        try:
-            if self._whisper_model is None:
-                print('[Whisper] Loading model...')
-                self._whisper_model = _whisper_mod.load_model('base')
-                print('[Whisper] Model loaded.')
-            result = self._whisper_model.transcribe(path)
-            return result.get('text', '').strip()
-        except Exception as e:
-            print(f'[Whisper] {e}')
-            return ''
-
-    # ── Ollama query ──────────────────────────────────────────────────
-    def _query_ollama_and_display(self, text: str):
-        """Query Ollama and push result to UI. Safe to call from any thread."""
+    def _ollama(self, text):
         if not _HAS_REQUESTS:
-            self._update_voice_response(
-                f'Query: {text}\n\n[requests not installed — cannot reach Ollama]')
-            return
-        try:
-            ollama_hosts = [
-                'http://localhost:11434/api/generate',
-                'http://127.0.0.1:11434/api/generate',
-            ]
-            # On Android, if running a local Ollama instance on the same device:
-            if platform == 'android':
-                ollama_hosts.insert(0, 'http://10.0.2.2:11434/api/generate')
+            self._set_voice_lbl(f'Query: {text}\n\n[requests not installed]'); return
+        urls=['http://localhost:11434/api/generate','http://127.0.0.1:11434/api/generate']
+        if platform=='android': urls.insert(0,'http://10.0.2.2:11434/api/generate')
+        for url in urls:
+            try:
+                r=_requests_mod.post(url,json={'model':'llama3','prompt':text,'stream':False},timeout=30)
+                r.raise_for_status()
+                ans=(r.json().get('response') or r.json().get('text') or '').strip() or 'No response.'
+                self._set_voice_lbl(ans); return
+            except Exception as e: print(f'[Ollama] {url}: {e}')
+        self._set_voice_lbl(f'Could not reach Ollama.\nQuery: {text}')
 
-            last_err = None
-            for url in ollama_hosts:
-                try:
-                    resp = _requests_mod.post(
-                        url,
-                        json={
-                            'model': 'llama3',
-                            'prompt': text,
-                            'stream': False,
-                        },
-                        timeout=30)
-                    resp.raise_for_status()
-                    payload = resp.json()
-                    answer  = (payload.get('response') or payload.get('text') or '').strip()
-                    answer  = answer or 'Ollama returned an empty response.'
-                    self._update_voice_response(answer)
-                    return
-                except Exception as e:
-                    last_err = e
-                    print(f'[Ollama] {url}: {e}')
-
-            self._update_voice_response(
-                f'Could not reach Ollama.\nQuery was: {text}\nError: {last_err}')
-        except Exception as exc:
-            print(f'[Ollama] {exc}')
-            self._update_voice_response(f'Ollama error: {str(exc)[:120]}')
-
-    # ── Thread-safe UI update ─────────────────────────────────────────
-    def _update_voice_response(self, text: str):
-        Clock.schedule_once(
-            lambda dt: setattr(self._voice_response_label, 'text', text), 0)
+    def _set_voice_lbl(self, txt):
+        Clock.schedule_once(lambda dt: setattr(self._voice_lbl,'text',txt), 0)
 
 
-# ============================================================
-# Helper — Phase2 button builder (shared)
-# ============================================================
-def _build_phase2_button(title, callback):
-    btn = AutoButton(
-        text=title,
-        font_size=theme.font(theme.FONT_BODY_REGULAR),
-        color=theme.TEXT_PRIMARY,
-        halign='center', valign='middle')
+# ════════════════════════════════════════════════════════════════════════
+# Shared button helper
+# ════════════════════════════════════════════════════════════════════════
+def _action_btn(text, callback, bg=None):
+    bg = bg or theme.BUTTON_BG
+    btn = AutoButton(text=text, font_size=theme.font(theme.FONT_BODY_REGULAR),
+                     color=theme.TEXT_PRIMARY, halign='center', valign='middle')
     btn.size_hint_y = None
     btn.bind(on_press=callback)
     with btn.canvas.before:
-        Color(*theme.BUTTON_BG)
-        btn._bg_rect = RoundedRectangle(pos=btn.pos, size=btn.size, radius=[dp(10)])
-    btn.bind(
-        pos=lambda inst, v: setattr(btn._bg_rect, 'pos', btn.pos),
-        size=lambda inst, v: setattr(btn._bg_rect, 'size', btn.size))
+        Color(*bg)
+        btn._bg = RoundedRectangle(pos=btn.pos, size=btn.size, radius=[dp(10)])
+    btn.bind(pos=lambda inst,v: setattr(btn._bg,'pos',btn.pos),
+             size=lambda inst,v: setattr(btn._bg,'size',btn.size))
     return btn
 
 
-# ============================================================
+# ════════════════════════════════════════════════════════════════════════
 # DashboardScreen
-# ============================================================
-class DashboardScreen(VoiceAssistantMixin, ScrollView):
+# ════════════════════════════════════════════════════════════════════════
+class DashboardScreen(VoiceMixin, BoxLayout):
+    """
+    Dashboard with:
+      - stat cards
+      - 🎤 Ask NeuroMentor  → Ollama Q&A
+      - 📝 TRANSCRIBER      → opens TranscriberScreen (idx 5)
+    """
     def __init__(self, app_state, **kwargs):
-        super().__init__(do_scroll_x=False, do_scroll_y=True, **kwargs)
+        super().__init__(orientation='vertical', padding=20, spacing=15, **kwargs)
         self._app_state = app_state
 
-        self._inner = BoxLayout(
-            orientation='vertical',
-            padding=[dp(16), dp(16), dp(16), dp(16)],
-            spacing=dp(12),
-            size_hint_y=None)
-        self._inner.bind(minimum_height=self._inner.setter('height'))
-        self.add_widget(self._inner)
+        # Welcome
+        self._wl = Label(text='WELCOME BACK, USER', font_size=theme.font(theme.FONT_TITLE_MEDIUM),
+                         bold=True, color=theme.GOLD, size_hint_y=None, height=35,
+                         halign='left', valign='middle')
+        self._wl.bind(size=self._wl.setter('text_size'))
+        self.add_widget(self._wl)
+        app_state.bind(current_user=self._upd_welcome); self._upd_welcome()
 
-        # ── Welcome label ──────────────────────────────────────
-        self._welcome_lbl = Label(
-            text='WELCOME BACK, USER',
-            font_size=theme.font(theme.FONT_TITLE_MEDIUM),
-            bold=True, color=theme.GOLD,
-            size_hint_y=None, halign='left', valign='middle')
-        self._welcome_lbl.bind(
-            size=self._welcome_lbl.setter('text_size'),
-            texture_size=lambda inst, sz: setattr(inst, 'height', max(sz[1], dp(32))))
-        self._inner.add_widget(self._welcome_lbl)
-        app_state.bind(current_user=self._update_welcome)
-        self._update_welcome()
+        # Status card
+        sc=GradientCard(size_hint_y=None,height=80,padding=[20,15])
+        sv=Label(text='OFFLINE',font_size=theme.font(theme.FONT_HEADING_MEDIUM),color=theme.TEXT_SECONDARY,halign='left',valign='middle')
+        sv.bind(size=sv.setter('text_size')); sc.add_widget(sv); self.add_widget(sc)
 
-        # ── Status card ────────────────────────────────────────
-        status_card = GradientCard(size_hint_y=None, height=dp(70), padding=[dp(16), dp(10)])
-        sv = Label(text='OFFLINE',
-            font_size=theme.font(theme.FONT_HEADING_MEDIUM),
-            color=theme.TEXT_SECONDARY, halign='left', valign='middle')
-        sv.bind(size=sv.setter('text_size'),
-                texture_size=lambda inst, sz: setattr(inst, 'height', max(sz[1], dp(28))))
-        status_card.add_widget(sv)
-        self._inner.add_widget(status_card)
+        # Stat cards
+        sr=BoxLayout(spacing=15,size_hint_y=None,height=100)
+        sr.add_widget(self._stat_card('STRESS','N/A',theme.RED))
+        sr.add_widget(self._stat_card('FOCUS','N/A',theme.TEAL))
+        sr.add_widget(self._stat_card('NEURO XP','0',theme.GOLD))
+        self.add_widget(sr)
 
-        # ── Stats row ──────────────────────────────────────────
-        stats_row = BoxLayout(spacing=dp(12), size_hint_y=None, height=dp(100))
-        stats_row.add_widget(self._build_stat_card('STRESS', 'N/A', theme.RED))
-        stats_row.add_widget(self._build_stat_card('FOCUS',  'N/A', theme.TEAL))
-        stats_row.add_widget(self._build_stat_card('NEURO XP', '0', theme.GOLD))
-        self._inner.add_widget(stats_row)
+        # Event log
+        lt=Label(text='EVENT LOG',font_size=theme.font(theme.FONT_BODY_SMALL),color=theme.TEXT_SECONDARY,size_hint_y=None,height=18,halign='left',valign='middle')
+        lt.bind(size=lt.setter('text_size')); self.add_widget(lt)
+        lb=GradientCard(size_hint_y=0.3,padding=[10,10])
+        ll=Label(text='No events yet',font_size=theme.font(theme.FONT_BODY_REGULAR),color=theme.TEAL,halign='left',valign='top')
+        ll.bind(size=ll.setter('text_size')); lb.add_widget(ll); self.add_widget(lb)
 
-        # ── Event log ──────────────────────────────────────────
-        lt = Label(text='EVENT LOG',
+        # ── Voice Q&A ──────────────────────────────────────────────────
+        va_card = GradientCard(size_hint_y=None, padding=[15, 12])
+        va_card.bind(minimum_height=va_card.setter('height'))
+
+        va_title = Label(text='VOICE ASSISTANT', font_size=theme.font(theme.FONT_BODY_SMALL),
+                         bold=True, color=theme.GOLD, size_hint_y=None, height=20,
+                         halign='left', valign='middle')
+        va_title.bind(size=va_title.setter('text_size'))
+        va_card.add_widget(va_title)
+
+        ask_btn = _action_btn('🎤  Ask NeuroMentor', self._btn_voice)
+        va_card.add_widget(ask_btn)
+
+        self._voice_lbl = AutoLabel(
+            text='Press the button and ask a question. Answer appears here.',
             font_size=theme.font(theme.FONT_BODY_SMALL),
-            color=theme.TEXT_SECONDARY, size_hint_y=None, halign='left', valign='middle')
-        lt.bind(size=lt.setter('text_size'),
-                texture_size=lambda inst, sz: setattr(inst, 'height', max(sz[1], dp(18))))
-        self._inner.add_widget(lt)
+            color=theme.TEXT_MUTED, halign='left')
+        va_card.add_widget(self._voice_lbl)
+        self.add_widget(va_card)
 
-        log_box = GradientCard(size_hint_y=None, height=dp(200), padding=[dp(10), dp(10)])
-        ll = Label(text='No events yet',
-            font_size=theme.font(theme.FONT_BODY_REGULAR),
-            color=theme.TEAL, halign='left', valign='top')
-        ll.bind(size=ll.setter('text_size'),
-                texture_size=lambda inst, sz: setattr(inst, 'height', max(sz[1], dp(40))))
-        log_box.add_widget(ll)
-        self._inner.add_widget(log_box)
+        # ── Transcriber shortcut ───────────────────────────────────────
+        tr_btn = _action_btn('📝  Open Transcriber', self._open_transcriber, bg=theme.DARK_CARD)
+        self.add_widget(tr_btn)
 
-        # ── Phase 2 section header ─────────────────────────────
-        phase2_header = AutoLabel(
-            text='PHASE 2 FEATURES',
-            font_size=theme.font(theme.FONT_BODY_SMALL),
-            bold=True, color=theme.TEXT_SECONDARY,
-            size_hint_y=None, halign='left', valign='middle')
-        phase2_header.bind(
-            size=phase2_header.setter('text_size'),
-            texture_size=lambda inst, sz: setattr(inst, 'height', max(sz[1], dp(18))))
-        self._inner.add_widget(phase2_header)
+        # Refresh
+        rb=ShadowButton(text='SYSTEM REFRESH',font_size=theme.font(theme.FONT_BODY_REGULAR),bold=True,size_hint_y=None,height=45,background_color=theme.BUTTON_BG,color=theme.GOLD)
+        self.add_widget(rb)
 
-        # ── Phase 2 buttons ────────────────────────────────────
-        phase2_group = BoxLayout(orientation='vertical', spacing=dp(12), size_hint_y=None)
-        phase2_group.bind(minimum_height=phase2_group.setter('height'))
-        phase2_group.add_widget(_build_phase2_button('🎤 Ask NeuroMentor', self.start_esp32_voice))
-        phase2_group.add_widget(_build_phase2_button('PHASE 2 INSIGHTS',  self._on_phase2_insights))
-        self._inner.add_widget(phase2_group)
+        self._init_voice()
 
-        # ── Voice response label ───────────────────────────────
-        self._voice_response_label = AutoLabel(
-            text='Voice assistant ready. Press 🎤 to ask a question.',
-            font_size=theme.font(theme.FONT_BODY_SMALL),
-            color=theme.TEXT_MUTED, size_hint_y=None,
-            halign='left', valign='middle')
-        self._voice_response_label.bind(
-            size=self._voice_response_label.setter('text_size'),
-            texture_size=lambda inst, sz: setattr(inst, 'height', max(sz[1], dp(24))))
-        self._inner.add_widget(self._voice_response_label)
+    def _upd_welcome(self, *a):
+        u=self._app_state.current_user; n=u.name.upper() if u and u.name else 'USER'
+        self._wl.text=f'WELCOME BACK, {n}'
 
-        # ── System refresh button ──────────────────────────────
-        rb = ShadowButton(
-            text='SYSTEM REFRESH',
-            font_size=theme.font(theme.FONT_BODY_REGULAR), bold=True,
-            size_hint_y=None, height=dp(44),
-            background_color=theme.BUTTON_BG, color=theme.GOLD)
-        self._inner.add_widget(rb)
+    def _open_transcriber(self, *a):
+        # PAGE index 5 = TranscriberScreen
+        self._app_state.set_selected_page(5)
 
-        # ── Init voice assistant mixin ─────────────────────────
-        self._init_voice_assistant()
-
-    # ── Helpers ───────────────────────────────────────────────────────
-    def _update_welcome(self, *a):
-        u = self._app_state.current_user
-        n = u.name.upper() if u and u.name else 'USER'
-        self._welcome_lbl.text = f'WELCOME BACK, {n}'
-
-    def _on_phase2_insights(self, *args):
-        try:
-            idx = PAGE_NAMES.index('PHASE 2 INSIGHTS')
-            self._app_state.set_selected_page(idx)
-        except ValueError:
-            pass
-
-    def _build_stat_card(self, title, value, accent):
-        card = GradientCard(accent_color=accent, padding=[dp(12), dp(8)],
-                            size_hint_y=None, height=dp(90))
-        t = Label(text=title, font_size=theme.font(theme.FONT_BODY_SMALL),
-            color=theme.TEXT_MUTED, size_hint_y=None, halign='left', valign='middle')
-        t.bind(size=t.setter('text_size'),
-               texture_size=lambda inst, sz: setattr(inst, 'height', max(sz[1], dp(16))))
-        card.add_widget(t)
-        v = Label(text=value, font_size=theme.font(theme.FONT_HEADING_LARGE),
-            bold=True, color=accent, size_hint_y=None, halign='left', valign='middle')
-        v.bind(size=v.setter('text_size'),
-               texture_size=lambda inst, sz: setattr(inst, 'height', max(sz[1], dp(28))))
-        card.add_widget(v)
+    def _stat_card(self,title,value,accent):
+        card=GradientCard(accent_color=accent,padding=[15,10])
+        t=Label(text=title,font_size=theme.font(theme.FONT_BODY_SMALL),color=theme.TEXT_MUTED,size_hint_y=None,height=16,halign='left',valign='middle')
+        t.bind(size=t.setter('text_size')); card.add_widget(t)
+        v=Label(text=value,font_size=theme.font(theme.FONT_HEADING_LARGE),bold=True,color=accent,halign='left',valign='middle')
+        v.bind(size=v.setter('text_size')); card.add_widget(v)
         return card
 
 
-# ============================================================
-# Phase2NotesScreen  (Voice Assistant dedicated page)
-# ============================================================
-class Phase2NotesScreen(VoiceAssistantMixin, ScrollView):
+# ════════════════════════════════════════════════════════════════════════
+# TranscriberScreen  (was "Phase2InsightsScreen")
+# Continuously listens on TCP port 5050 for text pushed by whisper_server.py
+# and also lets the user type/paste text, then sends to Ollama for summary.
+# ════════════════════════════════════════════════════════════════════════
+class TranscriberScreen(ScrollView):
+    """
+    Speech-to-text transcript + Ollama summary.
+
+    Two input modes:
+      1. Automatic: whisper_server.py pushes transcribed text to port 5050
+         → displayed live in the transcript box.
+      2. Manual: user types/pastes text in the input field and taps ADD.
+
+    SUMMARIZE button sends the full transcript to Ollama llama3.
+    CLEAR wipes everything.
+    """
     def __init__(self, app_state, **kwargs):
         super().__init__(do_scroll_x=False, do_scroll_y=True, **kwargs)
         self._app_state = app_state
-        self._inner = BoxLayout(
-            orientation='vertical',
-            padding=[dp(16), dp(16), dp(16), dp(16)],
-            spacing=dp(12),
-            size_hint_y=None)
+        self._chunks    = []          # accumulated transcript chunks
+        self._summary_thread = None
+
+        self._inner = BoxLayout(orientation='vertical', padding=dp(16),
+                                spacing=dp(12), size_hint_y=None)
         self._inner.bind(minimum_height=self._inner.setter('height'))
         self.add_widget(self._inner)
 
-        title = AutoLabel(
-            text='VOICE ASSISTANT',
-            font_size=theme.font(theme.FONT_TITLE_MEDIUM),
-            bold=True, color=theme.GOLD, size_hint_y=None,
-            halign='left', valign='middle')
-        title.bind(
-            size=title.setter('text_size'),
-            texture_size=lambda inst, sz: setattr(inst, 'height', max(sz[1], dp(32))))
+        # Title
+        title = AutoLabel(text='TRANSCRIBER',
+                          font_size=theme.font(theme.FONT_TITLE_MEDIUM),
+                          bold=True, color=theme.GOLD, halign='left')
         self._inner.add_widget(title)
 
-        hint = AutoLabel(
-            text='Speak a question — the ESP32 captures audio, Whisper transcribes it, '
-                 'and Ollama (llama3) generates an answer locally.',
+        sub = AutoLabel(
+            text='Speech → text transcript + AI summary via Ollama.\n'
+                 'Connect whisper_server.py (port 9999 ← ESP32, port 5050 → here).',
             font_size=theme.font(theme.FONT_BODY_SMALL),
-            color=theme.TEXT_SECONDARY, size_hint_y=None,
-            halign='left', valign='middle')
-        hint.bind(
-            size=hint.setter('text_size'),
-            texture_size=lambda inst, sz: setattr(inst, 'height', max(sz[1], dp(24))))
-        self._inner.add_widget(hint)
+            color=theme.TEXT_MUTED, halign='left')
+        self._inner.add_widget(sub)
 
-        # Architecture info card
-        arch_card = GradientCard(size_hint_y=None, padding=[dp(12), dp(10)])
-        arch_card.bind(minimum_height=arch_card.setter('height'))
-        arch_info = AutoLabel(
-            text='Architecture: ESP32 mic → Serial/TCP → WAV → Whisper base → Ollama llama3\n'
-                 'TCP push mode: whisper_server.py (port 9999) → NeuroMentor (port 5050)',
+        # Status row
+        self._status_lbl = AutoLabel(
+            text='● LISTENING on port 5050',
             font_size=theme.font(theme.FONT_BODY_SMALL),
-            color=theme.TEXT_MUTED, size_hint_y=None,
-            halign='left', valign='middle')
-        arch_info.bind(
-            size=arch_info.setter('text_size'),
-            texture_size=lambda inst, sz: setattr(inst, 'height', max(sz[1], dp(36))))
-        arch_card.add_widget(arch_info)
-        self._inner.add_widget(arch_card)
+            color=theme.GOLD, halign='left')
+        self._inner.add_widget(self._status_lbl)
 
-        self._voice_button = _build_phase2_button('🎤 Ask NeuroMentor', self.start_esp32_voice)
-        self._inner.add_widget(self._voice_button)
+        # ── TRANSCRIPT box ─────────────────────────────────────────────
+        tcard = GradientCard(size_hint_y=None, height=dp(220), padding=[dp(10), dp(10)])
+        t_hdr = Label(text='LIVE TRANSCRIPT', font_size=theme.font(theme.FONT_BODY_SMALL),
+                      bold=True, color=theme.TEAL, size_hint_y=None, height=dp(20),
+                      halign='left', valign='middle')
+        t_hdr.bind(size=t_hdr.setter('text_size'))
+        tcard.add_widget(t_hdr)
 
-        # Voice response display
-        resp_card = GradientCard(size_hint_y=None, padding=[dp(12), dp(10)])
-        resp_card.bind(minimum_height=resp_card.setter('height'))
-
-        resp_header = AutoLabel(
-            text='RESPONSE',
-            font_size=theme.font(theme.FONT_BODY_SMALL),
-            bold=True, color=theme.GOLD, size_hint_y=None,
-            halign='left', valign='middle')
-        resp_header.bind(
-            size=resp_header.setter('text_size'),
-            texture_size=lambda inst, sz: setattr(inst, 'height', max(sz[1], dp(18))))
-        resp_card.add_widget(resp_header)
-
-        self._voice_response_label = AutoLabel(
-            text='Response will appear here.',
+        t_scroll = ScrollView(do_scroll_x=False, do_scroll_y=True)
+        self._transcript_lbl = Label(
+            text='Waiting for speech...',
             font_size=theme.font(theme.FONT_BODY_REGULAR),
-            color=theme.TEXT_PRIMARY, size_hint_y=None,
-            halign='left', valign='middle')
-        self._voice_response_label.bind(
-            size=self._voice_response_label.setter('text_size'),
-            texture_size=lambda inst, sz: setattr(inst, 'height', max(sz[1], dp(80))))
-        resp_card.add_widget(self._voice_response_label)
-        self._inner.add_widget(resp_card)
+            color=theme.TEXT_PRIMARY, halign='left', valign='top',
+            size_hint_y=None, markup=False)
+        self._transcript_lbl.bind(
+            texture_size=lambda inst,sz: setattr(inst,'height',max(sz[1],dp(60))),
+            width=lambda inst,w: setattr(inst,'text_size',(w,None)))
+        t_scroll.add_widget(self._transcript_lbl)
+        tcard.add_widget(t_scroll)
 
-        # Init mixin
-        self._init_voice_assistant()
+        # Word counter
+        self._word_lbl = Label(text='0 words · 0 segments',
+                               font_size=theme.font(theme.FONT_BODY_SMALL),
+                               color=theme.TEXT_MUTED, size_hint_y=None, height=dp(18),
+                               halign='left', valign='middle')
+        self._word_lbl.bind(size=self._word_lbl.setter('text_size'))
+        tcard.add_widget(self._word_lbl)
+        self._inner.add_widget(tcard)
 
-
-# ============================================================
-# Phase2InsightsScreen
-# ============================================================
-class Phase2InsightsScreen(ScrollView):
-    def __init__(self, app_state, **kwargs):
-        super().__init__(do_scroll_x=False, do_scroll_y=True, **kwargs)
-        self._app_state = app_state
-        self._inner = BoxLayout(
-            orientation='vertical',
-            padding=[dp(16), dp(16), dp(16), dp(16)],
-            spacing=dp(12),
-            size_hint_y=None)
-        self._inner.bind(minimum_height=self._inner.setter('height'))
-        self.add_widget(self._inner)
-
-        title = AutoLabel(
-            text='PHASE 2 INSIGHTS',
-            font_size=theme.font(theme.FONT_TITLE_MEDIUM),
-            bold=True, color=theme.GOLD, size_hint_y=None,
-            halign='left', valign='middle')
-        title.bind(
-            size=title.setter('text_size'),
-            texture_size=lambda inst, sz: setattr(inst, 'height', max(sz[1], dp(32))))
-        self._inner.add_widget(title)
-
-        hint = AutoLabel(
-            text='Enter 5 EEG band values as comma-separated numbers.',
-            font_size=theme.font(theme.FONT_BODY_SMALL),
-            color=theme.TEXT_SECONDARY, size_hint_y=None,
-            halign='left', valign='middle')
-        hint.bind(
-            size=hint.setter('text_size'),
-            texture_size=lambda inst, sz: setattr(inst, 'height', max(sz[1], dp(24))))
-        self._inner.add_widget(hint)
-
-        self._input = TextInput(
-            hint_text='delta, theta, alpha, beta, gamma',
+        # ── Manual text input row ──────────────────────────────────────
+        row = BoxLayout(size_hint_y=None, height=dp(44), spacing=dp(8))
+        self._txt_in = TextInput(
+            hint_text='Type or paste speech text here...',
             font_size=theme.font(theme.FONT_BODY_REGULAR),
-            multiline=False, size_hint_y=None, height=dp(44),
-            background_color=theme.INPUT_BG, foreground_color=theme.TEXT_PRIMARY,
-            padding=[dp(12), dp(12)])
-        self._inner.add_widget(self._input)
+            multiline=False, size_hint_x=0.75,
+            background_color=theme.INPUT_BG,
+            foreground_color=theme.TEXT_PRIMARY,
+            cursor_color=theme.TEAL, padding=[dp(10), dp(10)])
+        self._txt_in.bind(on_text_validate=lambda *a: self._add_manual())
+        add_btn = ShadowButton(text='ADD', font_size=theme.font(theme.FONT_BODY_REGULAR),
+                               bold=True, size_hint_x=0.25,
+                               background_color=theme.BUTTON_BG, color=theme.GOLD)
+        add_btn.bind(on_press=lambda *a: self._add_manual())
+        row.add_widget(self._txt_in); row.add_widget(add_btn)
+        self._inner.add_widget(row)
 
-        self._run_btn = _build_phase2_button('RUN PREDICTION', self.on_run_prediction)
-        self._inner.add_widget(self._run_btn)
+        # ── Action buttons ─────────────────────────────────────────────
+        btn_row = BoxLayout(size_hint_y=None, height=dp(48), spacing=dp(10))
+        sum_btn = ShadowButton(text='SUMMARIZE', font_size=theme.font(theme.FONT_BODY_REGULAR),
+                               bold=True, background_color=theme.GOLD, color=(0,0,0,1))
+        sum_btn.bind(on_press=self._do_summarize)
+        clr_btn = ShadowButton(text='CLEAR', font_size=theme.font(theme.FONT_BODY_REGULAR),
+                               bold=True, background_color=theme.DANGER_BUTTON_BG,
+                               color=theme.TEXT_PRIMARY)
+        clr_btn.bind(on_press=self._do_clear)
+        btn_row.add_widget(sum_btn); btn_row.add_widget(clr_btn)
+        self._inner.add_widget(btn_row)
 
-        self._result_lbl = AutoLabel(
-            text='Prediction output appears here.',
-            font_size=theme.font(theme.FONT_BODY_SMALL),
-            color=theme.TEXT_MUTED, size_hint_y=None,
-            halign='left', valign='middle')
-        self._result_lbl.bind(
-            size=self._result_lbl.setter('text_size'),
-            texture_size=lambda inst, sz: setattr(inst, 'height', max(sz[1], dp(24))))
-        self._inner.add_widget(self._result_lbl)
+        # ── SUMMARY box ────────────────────────────────────────────────
+        scard = GradientCard(size_hint_y=None, padding=[dp(10), dp(10)])
+        scard.bind(minimum_height=scard.setter('height'))
+        s_hdr = Label(text='AI SUMMARY', font_size=theme.font(theme.FONT_BODY_SMALL),
+                      bold=True, color=theme.GOLD, size_hint_y=None, height=dp(20),
+                      halign='left', valign='middle')
+        s_hdr.bind(size=s_hdr.setter('text_size'))
+        scard.add_widget(s_hdr)
+        self._summary_lbl = AutoLabel(
+            text='Summary appears here after you press SUMMARIZE.',
+            font_size=theme.font(theme.FONT_BODY_REGULAR),
+            color=theme.TEXT_PRIMARY, halign='left')
+        scard.add_widget(self._summary_lbl)
+        self._inner.add_widget(scard)
 
-    def on_run_prediction(self, *args):
-        Clock.schedule_once(self._do_run_prediction, 0)
+        # Start TCP listener thread
+        threading.Thread(target=self._tcp_listen, daemon=True).start()
 
-    def _do_run_prediction(self, dt):
+    # ── TCP listener (receives text from whisper_server.py) ───────────
+    def _tcp_listen(self):
         try:
-            parts = [p.strip() for p in self._input.text.split(',') if p.strip()]
-            if len(parts) != 5:
-                raise ValueError('Enter exactly 5 comma-separated values.')
-            bands = EegBands(*[float(p) for p in parts])
-            classifier = getattr(self._app_state, 'rf_classifier', None)
-            if classifier is None or not classifier.is_trained:
-                raise RuntimeError('RF model unavailable. Train or load a model first.')
-            features   = classifier.build_feature_vector(bands)
-            prediction = classifier.predict(bands)
-            self._result_lbl.text = f'Prediction: {prediction}\nFeatures: {features[:5]}...'
-        except Exception as exc:
-            self._result_lbl.text = f'Error: {exc}'
-
-
-# ============================================================
-# ProfileScreen
-# ============================================================
-class ProfileScreen(ScrollView):
-    def __init__(self, app_state, **kwargs):
-        super().__init__(do_scroll_x=False, do_scroll_y=True, **kwargs)
-        self._app_state = app_state
-        self._inner = BoxLayout(
-            orientation='vertical',
-            padding=[dp(16), dp(16), dp(16), dp(16)],
-            spacing=dp(12),
-            size_hint_y=None)
-        self._inner.bind(minimum_height=self._inner.setter('height'))
-        self.add_widget(self._inner)
-
-        tb = GradientCard(size_hint_y=None, height=dp(50),
-                          padding=[dp(10), dp(10)], radius=10)
-        tl = Label(text='USER PROFILE',
-            font_size=theme.font(theme.FONT_TITLE_MEDIUM),
-            bold=True, color=theme.GOLD, halign='left', valign='middle')
-        tl.bind(size=tl.setter('text_size'),
-                texture_size=lambda inst, sz: setattr(inst, 'height', max(sz[1], dp(32))))
-        tb.add_widget(tl); self._inner.add_widget(tb)
-
-        form = GradientCard(padding=[dp(16), dp(16)], size_hint_y=None)
-        form.bind(minimum_height=form.setter('height'))
-
-        for lbl_text, attr, multi, h in [
-            ('FULL NAME:',      '_name_input',  False, dp(44)),
-            ('AGE:',            '_age_input',   False, dp(44)),
-            ('CLINICAL NOTES:', '_notes_input', True,  dp(120)),
-        ]:
-            lbl = Label(text=lbl_text,
-                font_size=theme.font(theme.FONT_BODY_REGULAR),
-                color=theme.TEAL, bold=True, size_hint_y=None,
-                halign='left', valign='middle')
-            lbl.bind(size=lbl.setter('text_size'),
-                     texture_size=lambda inst, sz: setattr(inst, 'height', max(sz[1], dp(20))))
-            form.add_widget(lbl)
-            inp = TextInput(font_size=theme.font(theme.FONT_BODY_REGULAR),
-                multiline=multi, size_hint_y=None, height=h,
-                background_color=theme.INPUT_BG,
-                foreground_color=theme.TEXT_PRIMARY,
-                cursor_color=theme.TEAL, padding=[dp(12), dp(10)])
-            setattr(self, attr, inp)
-            form.add_widget(inp)
-
-        self._inner.add_widget(form)
-        sb = ShadowButton(text='SAVE PROFILE DATA',
-            font_size=theme.font(theme.FONT_BODY_REGULAR), bold=True,
-            size_hint_y=None, height=dp(44),
-            background_color=theme.GOLD, color=(0, 0, 0, 1))
-        sb.bind(on_press=lambda *a: self._save_profile())
-        self._inner.add_widget(sb)
-        app_state.bind(current_user=self._load_profile)
-        self._load_profile()
-
-    def _load_profile(self, *a):
-        u = self._app_state.current_user
-        if u:
-            self._name_input.text  = u.name  or ''
-            self._age_input.text   = u.age   or ''
-            self._notes_input.text = u.notes or ''
-
-    def _save_profile(self):
-        self._app_state.update_profile(
-            name=self._name_input.text,
-            age=self._age_input.text,
-            notes=self._notes_input.text)
-        pop = Popup(title='', content=Label(
-            text='PROFILE UPDATED.',
-            font_size=theme.font(theme.FONT_BODY_REGULAR),
-            color=theme.TEXT_PRIMARY),
-            size_hint=(None, None), size=(dp(250), dp(120)),
-            background_color=theme.PANEL_BG, auto_dismiss=True)
-        pop.open()
-        Clock.schedule_once(lambda dt: pop.dismiss(), 1.5)
-
-
-# ============================================================
-# CalibrationScreen
-# ============================================================
-class CalibrationScreen(BoxLayout):
-    def __init__(self, app_state, **kwargs):
-        super().__init__(orientation='vertical', **kwargs)
-        self._app_state = app_state
-        self._active_task = self._active_widget = None
-        self._sequence_running = False; self._sequence = []
-        self._sequence_idx = 0; self._time_left = 0
-        self._seq_clock = self._manual_clock = None
-        self._manual_time = 0; self._was_running = False
-
-        self._eeg_graph = EegGraph(size_hint_y=None, height=dp(160))
-        self.add_widget(self._eeg_graph)
-
-        fb = BoxLayout(size_hint_y=None, height=dp(40), padding=[dp(20), dp(5)])
-        with fb.canvas.before:
-            Color(0, 0, 0, 1); fb._bg = Rectangle(pos=fb.pos, size=fb.size)
-        fb.bind(pos=lambda inst, v: setattr(inst._bg, 'pos', v),
-                size=lambda inst, v: setattr(inst._bg, 'size', v))
-        self._feedback_lbl = Label(text='Waiting for signal...',
-            font_size=theme.font(theme.FONT_BODY_LARGE),
-            color=theme.TEXT_MUTED, halign='center', valign='middle')
-        self._feedback_lbl.bind(size=self._feedback_lbl.setter('text_size'))
-        fb.add_widget(self._feedback_lbl); self.add_widget(fb)
-
-        self._content_area = BoxLayout(padding=[dp(20), dp(10)])
-        self.add_widget(self._content_area)
-        self._show_task_cards()
-
-        seq_box = BoxLayout(size_hint_y=None, height=dp(60), padding=[dp(20), dp(10)])
-        self._execute_btn = ShadowButton(
-            text='EXECUTE FULL SEQUENCE (1 HOUR)',
-            font_size=theme.font(theme.FONT_BODY_LARGE), bold=True,
-            background_color=theme.GOLD, color=theme.BG_DARK,
-            halign='center', valign='middle', height=dp(48))
-        self._execute_btn.bind(
-            size=lambda inst, v: setattr(inst, 'text_size', (inst.width - dp(20), None)),
-            on_press=lambda *a: self._start_sequence())
-        seq_box.add_widget(self._execute_btn); self.add_widget(seq_box)
-
-        ctrl = BoxLayout(orientation='horizontal', size_hint_y=None, height=dp(50), spacing=dp(10))
-        self._status_lbl = Label(text='STATUS: IDLE',
-            font_size=theme.font(theme.FONT_BODY_SMALL),
-            color=theme.TEXT_SECONDARY, size_hint_x=0.3,
-            halign='left', valign='middle')
-        self._status_lbl.bind(size=self._status_lbl.setter('text_size'))
-        ctrl.add_widget(self._status_lbl)
-        ctrl.add_widget(Label(text='NEURO XP: 0',
-            font_size=theme.font(theme.FONT_HEADING_MEDIUM),
-            bold=True, color=theme.GOLD, size_hint_x=0.4))
-        self._timer_lbl = Label(text='00:00',
-            font_size=theme.font(theme.FONT_TIMER), bold=True,
-            color=theme.TEAL, size_hint_x=0.15)
-        ctrl.add_widget(self._timer_lbl)
-        self._abort_btn = ShadowButton(text='ABORT',
-            font_size=theme.font(theme.FONT_BODY_REGULAR), bold=True,
-            size_hint_x=0.3, background_color=theme.DANGER_BUTTON_BG,
-            color=theme.RED, disabled=True)
-        self._abort_btn.bind(on_press=lambda *a: self._stop_task())
-        ctrl.add_widget(self._abort_btn)
-        self.add_widget(ctrl)
-
-    def _show_task_cards(self):
-        self._content_area.clear_widgets()
-        row = BoxLayout(spacing=dp(15))
-        for title, sub, accent, tid in [
-            ('BASELINE', 'Relaxation', theme.GOLD, 'baseline'),
-            ('STRESS',   'High Load',  theme.RED,  'stress'),
-            ('FOCUS',    'Flow State', theme.TEAL, 'focus'),
-        ]:
-            row.add_widget(self._build_task_card(title, sub, accent, tid))
-        self._content_area.add_widget(row)
-
-    def _build_task_card(self, title, subtitle, accent, task_id):
-        card = GradientCard()
-        t = Label(text=title, font_size=theme.font(theme.FONT_BODY_LARGE),
-            bold=True, color=theme.GOLD, size_hint_y=None, halign='left', valign='middle')
-        t.bind(size=t.setter('text_size'),
-               texture_size=lambda inst, sz: setattr(inst, 'height', max(sz[1], dp(22))))
-        card.add_widget(t)
-        s = Label(text=subtitle, font_size=theme.font(theme.FONT_BODY_SMALL),
-            italic=True, color=theme.TEXT_MUTED, size_hint_y=None,
-            halign='left', valign='middle')
-        s.bind(size=s.setter('text_size'),
-               texture_size=lambda inst, sz: setattr(inst, 'height', max(sz[1], dp(18))))
-        card.add_widget(s)
-        card.add_widget(Label())
-        btn = ShadowButton(text='INITIALIZE',
-            font_size=theme.font(theme.FONT_BODY_REGULAR), bold=True,
-            size_hint_y=None, height=dp(44),
-            background_color=theme.BUTTON_BG, color=theme.GOLD)
-        btn.bind(on_press=lambda *a, tid=task_id: self._start_task(tid))
-        card.add_widget(btn)
-        return card
-
-    def _start_task(self, task_id):
-        self._active_task = task_id
-        self._status_lbl.text = f'STATUS: {task_id.upper()}'
-        self._abort_btn.disabled = False; self._execute_btn.disabled = True
-        self._content_area.clear_widgets()
-        tc = GradientCard(padding=[dp(10), dp(10)])
-        if task_id == 'baseline': self._active_widget = BreathingWidget()
-        elif task_id == 'stress': self._active_widget = StroopWidget()
-        elif task_id == 'focus':  self._active_widget = FocusWidget()
-        if self._active_widget: tc.add_widget(self._active_widget)
-        self._content_area.add_widget(tc)
-        self._manual_time = 0; self._was_running = False
-        if self._manual_clock: self._manual_clock.cancel()
-        self._manual_clock = Clock.schedule_interval(self._manual_tick, 1.0)
-        self._timer_lbl.text = '00:00'
-
-    def _manual_tick(self, dt):
-        if self._sequence_running: return
-        ir = getattr(self._active_widget, '_is_running', False)
-        if ir and not self._was_running: self._manual_time = 0; self._was_running = True
-        elif not ir and self._was_running: self._was_running = False
-        if ir:
-            self._manual_time += 1
-            self._timer_lbl.text = f'{self._manual_time // 60:02d}:{self._manual_time % 60:02d}'
-
-    def _start_sequence(self):
-        self._sequence = [('baseline', '4-7-8'), ('baseline', 'box'),
-                          ('focus', 'tracking'), ('focus', 'reading'),
-                          ('stress', 'stroop'),  ('stress', 'math')]
-        self._sequence_idx = 0; self._sequence_running = True
-        self._run_next_in_sequence()
-
-    def _run_next_in_sequence(self):
-        if self._sequence_idx >= len(self._sequence): self._stop_task(); return
-        tid, mode = self._sequence[self._sequence_idx]
-        self._start_task(tid)
-        if self._active_widget and hasattr(self._active_widget, 'set_mode'):
-            self._active_widget.set_mode(mode)
-            if hasattr(self._active_widget, 'start_task'):
-                self._active_widget.start_task()
-        self._time_left = 600
-        if self._seq_clock: self._seq_clock.cancel()
-        self._seq_clock = Clock.schedule_interval(self._sequence_tick, 1.0)
-        self._update_timer_label()
-
-    def _sequence_tick(self, dt):
-        if self._time_left > 0:
-            self._time_left -= 1; self._update_timer_label()
-        else:
-            if self._active_widget and hasattr(self._active_widget, '_score'):
-                mode = getattr(self._active_widget, '_mode',
-                               getattr(self._active_widget, '_is_math_mode', ''))
-                self._app_state.save_current_user_score(
-                    f'{self._active_task}_{mode}', self._active_widget._score)
-            if self._active_widget and hasattr(self._active_widget, 'stop'):
-                self._active_widget.stop()
-            self._sequence_idx += 1; self._run_next_in_sequence()
-
-    def _update_timer_label(self):
-        self._timer_lbl.text = f'{self._time_left // 60:02d}:{self._time_left % 60:02d}'
-
-    def _stop_task(self):
-        for clk in [self._seq_clock, self._manual_clock]:
-            if clk: clk.cancel()
-        self._seq_clock = self._manual_clock = None
-        self._sequence_running = False; self._timer_lbl.text = '00:00'
-        if self._active_widget and hasattr(self._active_widget, 'cleanup'):
-            self._active_widget.cleanup()
-        self._active_task = self._active_widget = None
-        self._status_lbl.text = 'STATUS: IDLE'
-        self._abort_btn.disabled = True; self._execute_btn.disabled = False
-        self._show_task_cards()
-
-
-# ============================================================
-# RandomForestScreen
-# ============================================================
-class RandomForestScreen(ScrollView):
-    def __init__(self, app_state, **kwargs):
-        super().__init__(do_scroll_x=False, do_scroll_y=True, **kwargs)
-        self._app_state = app_state; self._log_lines = []
-        self._is_training = False; self._is_checking = False
-        self._scheduled_events = []
-
-        self._inner = BoxLayout(
-            orientation='vertical',
-            padding=[dp(16), dp(16), dp(16), dp(16)],
-            spacing=dp(12),
-            size_hint_y=None)
-        self._inner.bind(minimum_height=self._inner.setter('height'))
-        self.add_widget(self._inner)
-
-        title = Label(text='RANDOM FOREST TRAINING',
-            font_size=theme.font(theme.FONT_HEADING_MEDIUM),
-            bold=True, color=theme.GOLD, size_hint_y=None,
-            halign='left', valign='middle')
-        title.bind(size=title.setter('text_size'),
-                   texture_size=lambda inst, sz: setattr(inst, 'height', max(sz[1], dp(28))))
-        self._inner.add_widget(title)
-
-        cbox = GradientCard(padding=[dp(10), dp(10)], size_hint_y=None, height=dp(280))
-        cscroll = ScrollView()
-        self._console_label = Label(text='',
-            font_size=theme.font(theme.FONT_BODY_REGULAR),
-            color=theme.TEAL, halign='left', valign='top',
-            size_hint_y=None, markup=False, padding=[dp(10), dp(10)])
-        self._console_label.bind(
-            texture_size=lambda inst, sz: setattr(inst, 'height', max(sz[1], dp(100))),
-            width=lambda inst, w: setattr(inst, 'text_size', (w - dp(20), None)))
-        cscroll.add_widget(self._console_label)
-        cbox.add_widget(cscroll); self._inner.add_widget(cbox)
-
-        for txt, cb in [
-            ('GENERATE DEMO DATA (TESTING)', self._generate_demo_data),
-            ('EXECUTE TRAINING PIPELINE',    self._start_training),
-            ('RUN COMPATIBILITY CHECK',      self._run_compat_check),
-        ]:
-            btn = ShadowButton(text=txt,
-                font_size=theme.font(theme.FONT_BODY_REGULAR), bold=True,
-                size_hint_y=None, height=dp(44),
-                background_color=theme.BUTTON_BG, color=theme.GOLD)
-            btn.bind(on_press=lambda *a, c=cb: c())
-            self._inner.add_widget(btn)
-            if txt == 'GENERATE DEMO DATA (TESTING)': self._demo_btn  = btn
-            elif txt == 'EXECUTE TRAINING PIPELINE':  self._train_btn = btn
-            else:                                     self._compat_btn = btn
-
-        ct = Label(text='COMPATIBILITY DIAGNOSTIC',
-            font_size=theme.font(theme.FONT_BODY_REGULAR), bold=True,
-            color=theme.TEXT_SECONDARY, size_hint_y=None,
-            halign='left', valign='middle')
-        ct.bind(size=ct.setter('text_size'),
-                texture_size=lambda inst, sz: setattr(inst, 'height', max(sz[1], dp(24))))
-        self._inner.add_widget(ct)
-
-        ccard = GradientCard(padding=[dp(10), dp(10)], size_hint_y=None, height=dp(200))
-        cscrl = ScrollView()
-        self._compat_label = Label(
-            text='Press RUN COMPATIBILITY CHECK to diagnose pipeline.',
-            font_size=theme.font(theme.FONT_BODY_SMALL),
-            color=theme.TEAL, halign='left', valign='top',
-            size_hint_y=None, markup=False, padding=[dp(10), dp(10)])
-        self._compat_label.bind(
-            texture_size=lambda inst, sz: setattr(inst, 'height', max(sz[1], dp(80))),
-            width=lambda inst, w: setattr(inst, 'text_size', (w - dp(20), None)))
-        cscrl.add_widget(self._compat_label)
-        ccard.add_widget(cscrl); self._inner.add_widget(ccard)
-
-    def _add_log(self, line):
-        self._log_lines.append(line)
-        self._console_label.text = '\n'.join(self._log_lines)
-
-    def _clear_log(self):
-        self._log_lines.clear(); self._console_label.text = ''
-
-    def _generate_demo_data(self):
-        if self._is_training: return
-        self._clear_log()
-        self._add_log('>>> GENERATING SYNTHETIC EEG DATASET...')
-        ev = Clock.schedule_once(lambda dt: self._finish_demo(), 1.0)
-        self._scheduled_events.append(ev)
-
-    def _finish_demo(self):
-        self._add_log('>>> SUCCESS. Generated 1440 samples (480 per class).')
-        self._add_log('>>> Features: 11-feature vector (5 bands + 6 ratios/combos)')
-        self._add_log('>>> You can now EXECUTE TRAINING PIPELINE.')
-
-    def _start_training(self):
-        if self._is_training: return
-        self._is_training = True
-        self._train_btn.text = 'TRAINING...'; self._train_btn.disabled = True
-        self._demo_btn.disabled = True; self._compat_btn.disabled = True
-        self._clear_log()
-        self._add_log('>>> INITIATING RANDOM FOREST TRAINING PIPELINE...')
-        self._simulate_training()
-
-    def _simulate_training(self):
-        self._unschedule_all()
-        steps = [
-            (0.2, ['[INFO] Loading calibration session data...',
-                   '[INFO] Found 3 classes: Calm, Stressed, Focused']),
-            (0.5, ['[INFO] Feature extraction complete.',
-                   '[INFO] Samples: Calm=480  Stressed=480  Focused=480',
-                   '[INFO] Feature vector size: 11 features per sample',
-                   '[INFO] Total dataset: 1440 samples']),
-            (0.9, ['[INFO] Applying StandardScaler normalization...',
-                   '[INFO] Mean per feature: [0.82, 1.14, 2.31, ...]']),
-            (1.3, ['[INFO] Splitting dataset: 80% train / 20% test',
-                   '[INFO] Stratified split — class balance preserved']),
-            (1.8, ['[INFO] Running 5-fold cross-validation...',
-                   '[INFO] Mean CV Accuracy: 88.4% ± 1.2%']),
-            (2.5, ['[INFO] Training RandomForestClassifier...',
-                   '[INFO] n_estimators=200  max_depth=20  n_jobs=1',
-                   '[INFO] Building trees...']),
-            (3.5, ['[INFO] Training complete.',
-                   '[INFO] OOB Score: 91.2%',
-                   '[INFO] Test Accuracy: 90.6%']),
-            (4.2, ['[INFO] Feature Importances (top 5):',
-                   '[INFO] 1. alpha_theta_ratio  0.187',
-                   '[INFO] 2. alpha_power        0.163',
-                   '[INFO] 3. beta_alpha_ratio   0.141',
-                   '[INFO] 4. beta_power         0.128',
-                   '[INFO] 5. gamma_beta_ratio   0.097']),
-            (4.8, ['[INFO] Saving model to user profile...',
-                   '[SUCCESS] Random Forest model saved. ✓',
-                   '[SUCCESS] Ready for live classification. ✓']),
-        ]
-        for delay, lines in steps:
-            ev = Clock.schedule_once(lambda dt, msgs=lines: self._add_log_batch(msgs), delay)
-            self._scheduled_events.append(ev)
-        ev = Clock.schedule_once(lambda dt: self._finish_training(), 5.3)
-        self._scheduled_events.append(ev)
-
-    def _add_log_batch(self, lines):
-        for l in lines: self._add_log(l)
-
-    def _finish_training(self):
-        self._is_training = False
-        self._train_btn.text = 'EXECUTE TRAINING PIPELINE'; self._train_btn.disabled = False
-        self._demo_btn.disabled = False; self._compat_btn.disabled = False
-
-    def _run_compat_check(self):
-        if self._is_training or self._is_checking: return
-        self._is_checking = True
-        self._compat_btn.text = 'RUNNING...'; self._compat_btn.disabled = True
-        self._train_btn.disabled = True; self._demo_btn.disabled = True
-        self._compat_label.text = 'Running diagnostic...\n'
-        Clock.schedule_once(lambda dt: self._do_compat_check(), 0.1)
-
-    def _do_compat_check(self):
-        try: out = run_compatibility_check()
+            srv = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            srv.bind(('0.0.0.0', 5050)); srv.listen(3); srv.settimeout(1.0)
+            Clock.schedule_once(lambda dt: setattr(self._status_lbl,'text',
+                '● LISTENING on port 5050 — ready for whisper_server.py'), 0)
+            while True:
+                try:
+                    conn, addr = srv.accept()
+                    data = b''; conn.settimeout(2.0)
+                    try:
+                        while True:
+                            chunk = conn.recv(4096)
+                            if not chunk: break
+                            data += chunk
+                    except: pass
+                    finally: conn.close()
+                    if data:
+                        text = data.decode('utf-8', errors='replace').strip()
+                        if text:
+                            Clock.schedule_once(lambda dt, t=text: self._append_chunk(t), 0)
+                except socket.timeout: continue
+                except Exception as e: print(f'[Transcriber TCP] {e}')
         except Exception as e:
-            out = f'ERROR:\n{traceback.format_exc()}'
-        self._compat_label.text = out
-        self._is_checking = False
-        self._compat_btn.text = 'RUN COMPATIBILITY CHECK'; self._compat_btn.disabled = False
-        self._train_btn.disabled = False; self._demo_btn.disabled = False
+            Clock.schedule_once(lambda dt: setattr(self._status_lbl,'text',
+                f'⚠ Could not bind port 5050: {e}'), 0)
 
-    def _unschedule_all(self):
-        for ev in self._scheduled_events: ev.cancel()
-        self._scheduled_events.clear()
+    # ── Append a chunk to the transcript ──────────────────────────────
+    def _append_chunk(self, text):
+        text = text.strip()
+        if not text: return
+        # Check for "summarize" voice command
+        if any(kw in text.lower() for kw in ['summarize','summarise','summary']):
+            self._do_summarize(None); return
+        ts = datetime.now().strftime('%H:%M:%S')
+        self._chunks.append(text)
+        lines = '\n'.join(f'[{datetime.now().strftime("%H:%M:%S")}]  {c}' for c in self._chunks)
+        self._transcript_lbl.text = lines
+        words = sum(len(c.split()) for c in self._chunks)
+        self._word_lbl.text = f'{words} words · {len(self._chunks)} segments'
 
-    def cleanup(self): self._unschedule_all()
+    def _add_manual(self):
+        t = self._txt_in.text.strip()
+        if t:
+            self._append_chunk(t); self._txt_in.text = ''
+
+    # ── Summarize via Ollama ───────────────────────────────────────────
+    def _do_summarize(self, *a):
+        full = '\n'.join(self._chunks)
+        if not full.strip():
+            self._summary_lbl.text = 'No transcript to summarize yet.'; return
+        if self._summary_thread and self._summary_thread.is_alive():
+            self._summary_lbl.text = 'Already generating summary...'; return
+        self._summary_lbl.text = 'Generating summary...'
+        self._summary_thread = threading.Thread(
+            target=self._run_summary, args=(full,), daemon=True)
+        self._summary_thread.start()
+
+    def _run_summary(self, transcript):
+        prompt = (
+            'You are a helpful assistant. Below is a transcript of speech. '
+            'Please provide a clear, concise summary with key points in bullet form.\n\n'
+            f'TRANSCRIPT:\n{transcript}\n\nSUMMARY:'
+        )
+        if not _HAS_REQUESTS:
+            Clock.schedule_once(lambda dt: setattr(self._summary_lbl,'text',
+                '[requests not installed — cannot reach Ollama]'), 0); return
+        urls = ['http://localhost:11434/api/generate','http://127.0.0.1:11434/api/generate']
+        if platform == 'android': urls.insert(0,'http://10.0.2.2:11434/api/generate')
+        for url in urls:
+            try:
+                r = _requests_mod.post(url,
+                    json={'model':'llama3','prompt':prompt,'stream':False}, timeout=60)
+                r.raise_for_status()
+                ans = (r.json().get('response') or '').strip() or 'No summary returned.'
+                Clock.schedule_once(lambda dt,s=ans: setattr(self._summary_lbl,'text',s), 0)
+                return
+            except Exception as e: print(f'[Transcriber Ollama] {url}: {e}')
+        Clock.schedule_once(lambda dt: setattr(self._summary_lbl,'text',
+            'Could not reach Ollama. Is it running?'), 0)
+
+    def _do_clear(self, *a):
+        self._chunks.clear()
+        self._transcript_lbl.text = 'Waiting for speech...'
+        self._word_lbl.text = '0 words · 0 segments'
+        self._summary_lbl.text = 'Summary appears here after you press SUMMARIZE.'
 
 
-# ============================================================
-# MonitoringScreen
-# ============================================================
-class MonitoringScreen(ScrollView):
-    def __init__(self, app_state, **kwargs):
-        super().__init__(do_scroll_x=False, do_scroll_y=True, **kwargs)
-        self._app_state = app_state; self._is_monitoring = False
-        self._state_label = 'IDLE'; self._confidence = 0.0; self._showing_game = True
+# ════════════════════════════════════════════════════════════════════════
+# ProfileScreen
+# ════════════════════════════════════════════════════════════════════════
+class ProfileScreen(BoxLayout):
+    def __init__(self,app_state,**kwargs):
+        super().__init__(orientation='vertical',padding=20,spacing=15,**kwargs)
+        self._app_state=app_state
+        tb=GradientCard(size_hint_y=None,height=50,padding=[10,10],radius=10)
+        tl=Label(text='USER PROFILE',font_size=theme.font(theme.FONT_TITLE_MEDIUM),bold=True,color=theme.GOLD,halign='left',valign='middle')
+        tl.bind(size=tl.setter('text_size')); tb.add_widget(tl); self.add_widget(tb)
+        form=GradientCard(padding=[20,20])
+        for txt,attr,multi,h in [('FULL NAME:','_ni',False,40),('AGE:','_ai',False,40),('CLINICAL NOTES:','_noi',True,120)]:
+            lbl=Label(text=txt,font_size=theme.font(theme.FONT_BODY_REGULAR),color=theme.TEAL,bold=True,size_hint_y=None,height=20,halign='left',valign='middle')
+            lbl.bind(size=lbl.setter('text_size')); form.add_widget(lbl)
+            inp=TextInput(font_size=theme.font(theme.FONT_BODY_REGULAR),multiline=multi,size_hint_y=None,height=h,background_color=theme.INPUT_BG,foreground_color=theme.TEXT_PRIMARY,cursor_color=theme.TEAL,padding=[12,10])
+            setattr(self,attr,inp); form.add_widget(inp)
+        self.add_widget(form)
+        sb=ShadowButton(text='SAVE PROFILE DATA',font_size=theme.font(theme.FONT_BODY_REGULAR),bold=True,size_hint_y=None,height=45,background_color=theme.GOLD,color=(0,0,0,1))
+        sb.bind(on_press=lambda*a:self._save()); self.add_widget(sb)
+        app_state.bind(current_user=self._load); self._load()
+    def _load(self,*a):
+        u=self._app_state.current_user
+        if u: self._ni.text=u.name or ''; self._ai.text=u.age or ''; self._noi.text=u.notes or ''
+    def _save(self):
+        self._app_state.update_profile(name=self._ni.text,age=self._ai.text,notes=self._noi.text)
+        pop=Popup(title='',content=Label(text='PROFILE UPDATED.',font_size=theme.font(theme.FONT_BODY_REGULAR),color=theme.TEXT_PRIMARY),size_hint=(None,None),size=(250,120),background_color=theme.PANEL_BG,auto_dismiss=True)
+        pop.open(); Clock.schedule_once(lambda dt:pop.dismiss(),1.5)
 
-        self._inner = BoxLayout(
-            orientation='vertical',
-            padding=[dp(16), dp(16), dp(16), dp(16)],
-            spacing=dp(12),
-            size_hint_y=None)
-        self._inner.bind(minimum_height=self._inner.setter('height'))
-        self.add_widget(self._inner)
 
-        tab_row = BoxLayout(size_hint_y=None, height=dp(45), spacing=dp(5))
-        with tab_row.canvas.before:
-            Color(*theme.BG_DARK)
-            tab_row._bg = RoundedRectangle(pos=tab_row.pos, size=tab_row.size, radius=[dp(8)])
-        tab_row.bind(pos=lambda inst, v: setattr(inst._bg, 'pos', v),
-                     size=lambda inst, v: setattr(inst._bg, 'size', v))
-        self._tab_game = ToggleButton(text='NEURO-GAME', group='mt', state='down',
-            font_size=theme.font(theme.FONT_BODY_REGULAR), color=theme.GOLD)
-        self._tab_game.bind(on_press=lambda *a: self._switch_tab(True))
-        self._tab_tech = ToggleButton(text='TECHNICAL DATA', group='mt', state='normal',
-            font_size=theme.font(theme.FONT_BODY_REGULAR), color=theme.TEXT_MUTED)
-        self._tab_tech.bind(on_press=lambda *a: self._switch_tab(False))
-        tab_row.add_widget(self._tab_game); tab_row.add_widget(self._tab_tech)
-        self._inner.add_widget(tab_row)
-
-        self._content_area = BoxLayout(size_hint_y=None, height=dp(400))
-        self._inner.add_widget(self._content_area)
-        self._game_view = MindVisualizer(is_active=False, state_label='IDLE')
-        self._tech_view = self._build_tech_view()
-        self._content_area.add_widget(self._game_view)
-
-        self._control_btn = ShadowButton(text='INITIATE LIVE STREAM',
-            font_size=theme.font(theme.FONT_BODY_REGULAR), bold=True,
-            size_hint_y=None, height=dp(44),
-            background_color=theme.BUTTON_BG, color=theme.GOLD)
-        self._control_btn.bind(on_press=lambda *a: self._toggle_monitoring())
-        self._inner.add_widget(self._control_btn)
-
-    def _build_tech_view(self):
-        view = BoxLayout(orientation='vertical', spacing=dp(10),
-                         size_hint_y=None, height=dp(400))
-        sb = GradientCard(size_hint_y=None, height=dp(100), padding=[dp(20), dp(10)])
-        self._state_display = Label(text='IDLE',
-            font_size=theme.font(theme.FONT_DISPLAY_LARGE),
-            bold=True, color=theme.TEXT_MUTED)
-        sb.add_widget(self._state_display)
-        cr = BoxLayout(size_hint_y=None, height=dp(20))
-        self._conf_lbl = Label(text='CONF: 0%',
-            font_size=theme.font(theme.FONT_BODY_SMALL), color=theme.TEXT_MUTED)
-        cr.add_widget(self._conf_lbl)
-        cr.add_widget(Label(text='VER: ---',
-            font_size=theme.font(theme.FONT_BODY_SMALL), color=theme.TEXT_MUTED))
-        sb.add_widget(cr); view.add_widget(sb)
-        self._tech_eeg = EegGraph(size_hint_y=None, height=dp(140))
-        view.add_widget(self._tech_eeg)
-        self._band_bars = BandPowerBars(size_hint_y=None, height=dp(140))
-        view.add_widget(self._band_bars)
-        return view
-
-    def _switch_tab(self, show_game):
-        if self._showing_game == show_game: return
-        self._showing_game = show_game
-        self._content_area.clear_widgets()
-        self._content_area.add_widget(self._game_view if show_game else self._tech_view)
-
-    def _toggle_monitoring(self):
-        self._is_monitoring = not self._is_monitoring
-        self._game_view.is_active = self._is_monitoring
-        if self._is_monitoring:
-            self._control_btn.text     = 'TERMINATE STREAM'
-            self._control_btn.color    = theme.RED
-            self._control_btn.bg_color = theme.DANGER_BUTTON_BG
+# ════════════════════════════════════════════════════════════════════════
+# CalibrationScreen
+# ════════════════════════════════════════════════════════════════════════
+class CalibrationScreen(BoxLayout):
+    def __init__(self,app_state,**kwargs):
+        super().__init__(orientation='vertical',**kwargs)
+        self._app_state=app_state; self._active_task=self._active_widget=None
+        self._seq_running=False; self._seq=[]; self._seq_idx=0; self._time_left=0
+        self._seq_clk=self._man_clk=None; self._man_time=0; self._was_running=False
+        self._eeg=EegGraph(size_hint_y=None,height=160); self.add_widget(self._eeg)
+        fb=BoxLayout(size_hint_y=None,height=40,padding=[20,5])
+        with fb.canvas.before: Color(0,0,0,1); fb._bg=Rectangle(pos=fb.pos,size=fb.size)
+        fb.bind(pos=lambda inst,v:setattr(inst._bg,'pos',v),size=lambda inst,v:setattr(inst._bg,'size',v))
+        self._fl=Label(text='Waiting for signal...',font_size=theme.font(theme.FONT_BODY_LARGE),color=theme.TEXT_MUTED,halign='center',valign='middle')
+        self._fl.bind(size=self._fl.setter('text_size')); fb.add_widget(self._fl); self.add_widget(fb)
+        self._ca=BoxLayout(padding=[20,10]); self.add_widget(self._ca); self._show_cards()
+        sb=BoxLayout(size_hint_y=None,height=60,padding=[20,10])
+        self._eb=ShadowButton(text='EXECUTE FULL SEQUENCE (1 HOUR)',font_size=theme.font(theme.FONT_BODY_LARGE),bold=True,background_color=theme.GOLD,color=theme.BG_DARK,halign='center',valign='middle',height=sp(48))
+        self._eb.bind(size=lambda inst,v:setattr(inst,'text_size',(inst.width-20,None)),on_press=lambda*a:self._start_seq())
+        sb.add_widget(self._eb); self.add_widget(sb)
+        ctrl=BoxLayout(orientation='horizontal',size_hint_y=None,height=50,spacing=10)
+        self._sl=Label(text='STATUS: IDLE',font_size=theme.font(theme.FONT_BODY_SMALL),color=theme.TEXT_SECONDARY,size_hint_x=0.3,halign='left',valign='middle')
+        self._sl.bind(size=self._sl.setter('text_size')); ctrl.add_widget(self._sl)
+        ctrl.add_widget(Label(text='NEURO XP: 0',font_size=theme.font(theme.FONT_HEADING_MEDIUM),bold=True,color=theme.GOLD,size_hint_x=0.4))
+        self._tl=Label(text='00:00',font_size=theme.font(theme.FONT_TIMER),bold=True,color=theme.TEAL,size_hint_x=0.15)
+        ctrl.add_widget(self._tl)
+        self._ab=ShadowButton(text='ABORT',font_size=theme.font(theme.FONT_BODY_REGULAR),bold=True,size_hint_x=0.3,background_color=theme.DANGER_BUTTON_BG,color=theme.RED,disabled=True)
+        self._ab.bind(on_press=lambda*a:self._stop()); ctrl.add_widget(self._ab); self.add_widget(ctrl)
+    def _show_cards(self):
+        self._ca.clear_widgets(); row=BoxLayout(spacing=15)
+        for t,s,a,tid in [('BASELINE','Relaxation',theme.GOLD,'baseline'),('STRESS','High Load',theme.RED,'stress'),('FOCUS','Flow State',theme.TEAL,'focus')]:
+            row.add_widget(self._task_card(t,s,a,tid))
+        self._ca.add_widget(row)
+    def _task_card(self,title,sub,accent,tid):
+        card=GradientCard()
+        t=Label(text=title,font_size=sp(13),bold=True,color=theme.GOLD,size_hint_y=None,height=25,halign='left',valign='middle')
+        t.bind(size=t.setter('text_size')); card.add_widget(t)
+        s=Label(text=sub,font_size=theme.font(theme.FONT_BODY_SMALL),italic=True,color=theme.TEXT_MUTED,size_hint_y=None,height=18,halign='left',valign='middle')
+        s.bind(size=s.setter('text_size')); card.add_widget(s); card.add_widget(Label()); card.add_widget(Label())
+        btn=ShadowButton(text='INITIALIZE',font_size=theme.font(theme.FONT_BODY_REGULAR),bold=True,size_hint_y=None,height=40,background_color=theme.BUTTON_BG,color=theme.GOLD)
+        btn.bind(on_press=lambda*a,tid=tid:self._start_task(tid)); card.add_widget(btn); return card
+    def _start_task(self,tid):
+        self._active_task=tid; self._sl.text=f'STATUS: {tid.upper()}'; self._ab.disabled=False; self._eb.disabled=True
+        self._ca.clear_widgets(); tc=GradientCard(padding=[10,10])
+        if tid=='baseline': self._active_widget=BreathingWidget()
+        elif tid=='stress': self._active_widget=StroopWidget()
+        elif tid=='focus': self._active_widget=FocusWidget()
+        if self._active_widget: tc.add_widget(self._active_widget)
+        self._ca.add_widget(tc); self._man_time=0; self._was_running=False
+        if self._man_clk: self._man_clk.cancel()
+        self._man_clk=Clock.schedule_interval(self._man_tick,1.0); self._tl.text='00:00'
+    def _man_tick(self,dt):
+        if self._seq_running: return
+        ir=getattr(self._active_widget,'_is_running',False)
+        if ir and not self._was_running: self._man_time=0; self._was_running=True
+        elif not ir and self._was_running: self._was_running=False
+        if ir: self._man_time+=1; self._tl.text=f'{self._man_time//60:02d}:{self._man_time%60:02d}'
+    def _start_seq(self):
+        self._seq=[('baseline','4-7-8'),('baseline','box'),('focus','tracking'),('focus','reading'),('stress','stroop'),('stress','math')]
+        self._seq_idx=0; self._seq_running=True; self._run_next()
+    def _run_next(self):
+        if self._seq_idx>=len(self._seq): self._stop(); return
+        tid,mode=self._seq[self._seq_idx]; self._start_task(tid)
+        if self._active_widget and hasattr(self._active_widget,'set_mode'):
+            self._active_widget.set_mode(mode)
+            if hasattr(self._active_widget,'start_task'): self._active_widget.start_task()
+        self._time_left=600
+        if self._seq_clk: self._seq_clk.cancel()
+        self._seq_clk=Clock.schedule_interval(self._seq_tick,1.0); self._upd_timer()
+    def _seq_tick(self,dt):
+        if self._time_left>0: self._time_left-=1; self._upd_timer()
         else:
-            self._control_btn.text     = 'INITIATE LIVE STREAM'
-            self._control_btn.color    = theme.GOLD
-            self._control_btn.bg_color = theme.BUTTON_BG
-            self._state_display.text   = 'IDLE'
-            self._state_display.color  = theme.TEXT_MUTED
-            self._conf_lbl.text        = 'CONF: 0%'
-            if hasattr(self._game_view, 'cleanup'):
-                self._game_view.cleanup()
+            if self._active_widget and hasattr(self._active_widget,'_score'):
+                mode=getattr(self._active_widget,'_mode',getattr(self._active_widget,'_is_math_mode',''))
+                self._app_state.save_current_user_score(f'{self._active_task}_{mode}',self._active_widget._score)
+            if self._active_widget and hasattr(self._active_widget,'stop'): self._active_widget.stop()
+            self._seq_idx+=1; self._run_next()
+    def _upd_timer(self): self._tl.text=f'{self._time_left//60:02d}:{self._time_left%60:02d}'
+    def _stop(self):
+        for c in [self._seq_clk,self._man_clk]:
+            if c: c.cancel()
+        self._seq_clk=self._man_clk=None; self._seq_running=False; self._tl.text='00:00'
+        if self._active_widget and hasattr(self._active_widget,'cleanup'): self._active_widget.cleanup()
+        self._active_task=self._active_widget=None; self._sl.text='STATUS: IDLE'; self._ab.disabled=True; self._eb.disabled=False; self._show_cards()
 
 
-# ============================================================
+# ════════════════════════════════════════════════════════════════════════
+# RandomForestScreen
+# ════════════════════════════════════════════════════════════════════════
+class RandomForestScreen(BoxLayout):
+    def __init__(self,app_state,**kwargs):
+        super().__init__(orientation='vertical',padding=20,spacing=15,**kwargs)
+        self._app_state=app_state; self._log=[]; self._training=False; self._checking=False; self._evs=[]
+        tl=Label(text='RANDOM FOREST TRAINING',font_size=theme.font(theme.FONT_HEADING_MEDIUM),bold=True,color=theme.GOLD,size_hint_y=None,halign='left',valign='middle')
+        tl.bind(size=tl.setter('text_size')); self.add_widget(tl)
+        cb=GradientCard(padding=[10,10]); sc=ScrollView()
+        self._cl=Label(text='',font_size=theme.font(theme.FONT_BODY_REGULAR),color=theme.TEAL,halign='left',valign='top',size_hint_y=None,markup=False,padding=[10,10])
+        self._cl.bind(texture_size=lambda inst,sz:setattr(inst,'height',max(sz[1],100)),width=lambda inst,w:setattr(inst,'text_size',(w-20,None)))
+        sc.add_widget(self._cl); cb.add_widget(sc); self.add_widget(cb)
+        self._db=ShadowButton(text='GENERATE DEMO DATA (TESTING)',font_size=theme.font(theme.FONT_BODY_REGULAR),bold=True,size_hint_y=None,height=44,background_color=theme.BUTTON_BG,color=theme.GOLD)
+        self._db.bind(on_press=lambda*a:self._demo()); self.add_widget(self._db)
+        self._tb=ShadowButton(text='EXECUTE TRAINING PIPELINE',font_size=theme.font(theme.FONT_BODY_REGULAR),bold=True,size_hint_y=None,height=44,background_color=theme.BUTTON_BG,color=theme.GOLD)
+        self._tb.bind(on_press=lambda*a:self._train()); self.add_widget(self._tb)
+        self._cb2=ShadowButton(text='RUN COMPATIBILITY CHECK',font_size=theme.font(theme.FONT_BODY_REGULAR),bold=True,size_hint_y=None,height=44,background_color=theme.BUTTON_BG,color=theme.GOLD)
+        self._cb2.bind(on_press=lambda*a:self._compat()); self.add_widget(self._cb2)
+        ct=Label(text='COMPATIBILITY DIAGNOSTIC',font_size=theme.font(theme.FONT_BODY_REGULAR),bold=True,color=theme.TEXT_SECONDARY,size_hint_y=None,height=25,halign='left',valign='middle')
+        ct.bind(size=ct.setter('text_size')); self.add_widget(ct)
+        cc=GradientCard(padding=[10,10]); cs=ScrollView()
+        self._compat_lbl=Label(text='Press RUN COMPATIBILITY CHECK to diagnose pipeline.',font_size=theme.font(theme.FONT_BODY_SMALL),color=theme.TEAL,halign='left',valign='top',size_hint_y=None,markup=False,padding=[10,10])
+        self._compat_lbl.bind(texture_size=lambda inst,sz:setattr(inst,'height',max(sz[1],80)),width=lambda inst,w:setattr(inst,'text_size',(w-20,None)))
+        cs.add_widget(self._compat_lbl); cc.add_widget(cs); self.add_widget(cc)
+    def _add(self,l): self._log.append(l); self._cl.text='\n'.join(self._log)
+    def _clr(self): self._log.clear(); self._cl.text=''
+    def _demo(self):
+        if self._training: return
+        self._clr(); self._add('>>> GENERATING SYNTHETIC EEG DATASET...')
+        ev=Clock.schedule_once(lambda dt:(self._add('>>> SUCCESS. 1440 samples (480/class)'),self._add('>>> You can now EXECUTE TRAINING PIPELINE.')),1.0)
+        self._evs.append(ev)
+    def _train(self):
+        if self._training: return
+        self._training=True; self._tb.text='TRAINING...'; self._tb.disabled=True; self._db.disabled=True; self._cb2.disabled=True
+        self._clr(); self._add('>>> INITIATING RANDOM FOREST TRAINING PIPELINE...')
+        for t,msgs in [(0.2,['[INFO] Loading data...','[INFO] 3 classes: Calm, Stressed, Focused']),(0.5,['[INFO] Feature extraction complete.','[INFO] 1440 samples total']),(1.3,['[INFO] 80/20 split, stratified']),(1.8,['[INFO] 5-fold CV... Mean: 88.4% ±1.2%']),(2.5,['[INFO] Training RandomForestClassifier n=200...']),(3.5,['[INFO] OOB: 91.2%  Test: 90.6%']),(4.8,['[SUCCESS] Model saved ✓','[SUCCESS] Ready for live classification ✓'])]:
+            ev=Clock.schedule_once(lambda dt,m=msgs:[self._add(l) for l in m],t); self._evs.append(ev)
+        ev=Clock.schedule_once(lambda dt:self._done_train(),5.3); self._evs.append(ev)
+    def _done_train(self):
+        self._training=False; self._tb.text='EXECUTE TRAINING PIPELINE'; self._tb.disabled=False; self._db.disabled=False; self._cb2.disabled=False
+    def _compat(self):
+        if self._training or self._checking: return
+        self._checking=True; self._cb2.text='RUNNING...'; self._cb2.disabled=True; self._tb.disabled=True; self._db.disabled=True
+        self._compat_lbl.text='Running...\n'; Clock.schedule_once(lambda dt:self._do_compat(),0.1)
+    def _do_compat(self):
+        try: out=run_compatibility_check()
+        except: out=f'ERROR:\n{traceback.format_exc()}'
+        self._compat_lbl.text=out; self._checking=False
+        self._cb2.text='RUN COMPATIBILITY CHECK'; self._cb2.disabled=False; self._tb.disabled=False; self._db.disabled=False
+    def cleanup(self):
+        for e in self._evs: e.cancel(); self._evs.clear()
+
+
+# ════════════════════════════════════════════════════════════════════════
+# MonitoringScreen
+# ════════════════════════════════════════════════════════════════════════
+class MonitoringScreen(BoxLayout):
+    def __init__(self,app_state,**kwargs):
+        super().__init__(orientation='vertical',padding=20,spacing=15,**kwargs)
+        self._app_state=app_state; self._monitoring=False; self._showing_game=True
+        tr=BoxLayout(size_hint_y=None,height=45,spacing=5)
+        with tr.canvas.before: Color(*theme.BG_DARK); tr._bg=RoundedRectangle(pos=tr.pos,size=tr.size,radius=[8])
+        tr.bind(pos=lambda inst,v:setattr(inst._bg,'pos',v),size=lambda inst,v:setattr(inst._bg,'size',v))
+        self._tg=ToggleButton(text='NEURO-GAME',group='mtab',state='down',font_size=theme.font(theme.FONT_BODY_REGULAR),color=theme.GOLD)
+        self._tg.bind(on_press=lambda*a:self._tab(True))
+        self._tt=ToggleButton(text='TECHNICAL DATA',group='mtab',state='normal',font_size=theme.font(theme.FONT_BODY_REGULAR),color=theme.TEXT_MUTED)
+        self._tt.bind(on_press=lambda*a:self._tab(False))
+        tr.add_widget(self._tg); tr.add_widget(self._tt); self.add_widget(tr)
+        self._ca=BoxLayout(); self.add_widget(self._ca)
+        self._gv=MindVisualizer(is_active=False,state_label='IDLE'); self._tv=self._build_tech()
+        self._ca.add_widget(self._gv)
+        self._cb=ShadowButton(text='INITIATE LIVE STREAM',font_size=theme.font(theme.FONT_BODY_REGULAR),bold=True,size_hint_y=None,height=44,background_color=theme.BUTTON_BG,color=theme.GOLD)
+        self._cb.bind(on_press=lambda*a:self._toggle()); self.add_widget(self._cb)
+    def _build_tech(self):
+        v=BoxLayout(orientation='vertical',spacing=10,size_hint_y=None); v.bind(minimum_height=v.setter('height'))
+        sb=GradientCard(size_hint_y=None,height=120,padding=[20,20])
+        self._sd=Label(text='IDLE',font_size=theme.font(theme.FONT_DISPLAY_LARGE),bold=True,color=theme.TEXT_MUTED)
+        sb.add_widget(self._sd)
+        cr=BoxLayout(size_hint_y=None,height=20)
+        self._cfl=Label(text='CONF: 0%',font_size=theme.font(theme.FONT_BODY_SMALL),color=theme.TEXT_MUTED)
+        cr.add_widget(self._cfl); cr.add_widget(Label(text='VER: ---',font_size=theme.font(theme.FONT_BODY_SMALL),color=theme.TEXT_MUTED))
+        sb.add_widget(cr); v.add_widget(sb)
+        self._teg=EegGraph(); v.add_widget(self._teg)
+        self._bb=BandPowerBars(size_hint_y=None,height=160); v.add_widget(self._bb); return v
+    def _tab(self,g):
+        if self._showing_game==g: return
+        self._showing_game=g; self._ca.clear_widgets()
+        self._ca.add_widget(self._gv if g else self._tv)
+    def _toggle(self):
+        self._monitoring=not self._monitoring; self._gv.is_active=self._monitoring
+        if self._monitoring: self._cb.text='TERMINATE STREAM'; self._cb.color=theme.RED; self._cb.bg_color=theme.DANGER_BUTTON_BG
+        else:
+            self._cb.text='INITIATE LIVE STREAM'; self._cb.color=theme.GOLD; self._cb.bg_color=theme.BUTTON_BG
+            self._sd.text='IDLE'; self._sd.color=theme.TEXT_MUTED; self._cfl.text='CONF: 0%'
+
+
+# ════════════════════════════════════════════════════════════════════════
 # LoginScreen
-# ============================================================
-_AVATAR_COLORS = ['#2563eb', '#16a34a', '#ea0c0c', '#f59e0b', '#7c3aed', '#db2777']
+# ════════════════════════════════════════════════════════════════════════
+_AVATAR_COLORS=['#2563eb','#16a34a','#ea0c0c','#f59e0b','#7c3aed','#db2777']
 
 
 class UserTile(ButtonBehavior, Widget):
-    def __init__(self, username, on_select=None, **kwargs):
-        self.username  = username
-        self._on_select = on_select
-        kwargs['size_hint'] = (None, None)
-        kwargs['size']      = (dp(80), dp(90))
-        super().__init__(**kwargs)
-        self._pressed = False
-        self.bind(pos=self._update_canvas, size=self._update_canvas)
-        self._update_canvas()
-
-    def _get_avatar_color(self):
-        return theme.rgba_hex(_AVATAR_COLORS[hash(self.username) % len(_AVATAR_COLORS)])
-
-    def _update_canvas(self, *a):
+    def __init__(self,username,on_select=None,**kwargs):
+        self.username=username; self._on_select=on_select
+        kwargs['size_hint']=(None,None); kwargs['size']=(dp(80),dp(90))
+        super().__init__(**kwargs); self._pressed=False
+        self.bind(pos=self._draw,size=self._draw); self._draw()
+    def _color(self): return theme.rgba_hex(_AVATAR_COLORS[hash(self.username)%len(_AVATAR_COLORS)])
+    def _draw(self,*a):
         self.canvas.before.clear(); self.clear_widgets()
         with self.canvas.before:
-            Color(*(theme.rgba_hex('#2563eb', 0.4) if self._pressed
-                    else theme.rgba_hex('#1a2535', 1.0)))
-            RoundedRectangle(pos=self.pos, size=self.size, radius=[dp(12)] * 4)
-            Color(*self._get_avatar_color())
-            ad = dp(44); ax = self.x + (self.width - ad) / 2; ay = self.y + self.height - ad - dp(8)
-            Ellipse(pos=(ax, ay), size=(ad, ad))
-        ltr = Label(text=(self.username[0].upper() if self.username else '?'),
-            font_size=sp(20), bold=True, color=(1, 1, 1, 1),
-            size_hint=(None, None), size=(dp(44), dp(44)),
-            pos=(self.x + (self.width - dp(44)) / 2, self.y + self.height - dp(44) - dp(8)),
-            halign='center', valign='middle')
-        ltr.bind(size=ltr.setter('text_size')); self.add_widget(ltr)
-        dn = self.username[:9] + '\u2026' if len(self.username) > 9 else self.username
-        nl = Label(text=dn, font_size=sp(11),
-            color=theme.rgba_hex('#cbd5e1'),
-            size_hint=(None, None), size=(self.width, dp(16)),
-            pos=(self.x, self.y + dp(4)), halign='center', valign='middle')
+            Color(*(theme.rgba_hex('#2563eb',0.4) if self._pressed else theme.rgba_hex('#1a2535',1.0)))
+            RoundedRectangle(pos=self.pos,size=self.size,radius=[12]*4)
+            Color(*self._color()); ad=dp(44); ax=self.x+(self.width-ad)/2; ay=self.y+self.height-ad-dp(8)
+            Ellipse(pos=(ax,ay),size=(ad,ad))
+        l=Label(text=self.username[0].upper() if self.username else '?',font_size=sp(20),bold=True,color=(1,1,1,1),size_hint=(None,None),size=(dp(44),dp(44)),pos=(self.x+(self.width-dp(44))/2,self.y+self.height-dp(44)-dp(8)),halign='center',valign='middle')
+        l.bind(size=l.setter('text_size')); self.add_widget(l)
+        dn=self.username[:9]+'\u2026' if len(self.username)>9 else self.username
+        nl=Label(text=dn,font_size=sp(11),color=theme.rgba_hex('#cbd5e1'),size_hint=(None,None),size=(self.width,dp(16)),pos=(self.x,self.y+dp(4)),halign='center',valign='middle')
         nl.bind(size=nl.setter('text_size')); self.add_widget(nl)
-
-    def on_press(self): self._pressed = True; self._update_canvas()
-
-    def on_release(self):
-        self._pressed = False; self._update_canvas()
-        if self._on_select: self._on_select(self.username)
+    def on_press(self): self._pressed=True; self._draw()
+    def on_release(self): self._pressed=False; self._draw(); (self._on_select(self.username) if self._on_select else None)
 
 
 class LoginScreen(FloatLayout):
-    def __init__(self, app_state, on_login=None, **kwargs):
+    def __init__(self,app_state,on_login=None,**kwargs):
         super().__init__(**kwargs)
-        self._app_state = app_state; self._on_login = on_login
-        with self.canvas.before:
-            Color(*theme.BG_DARK)
-            self._bg = Rectangle(pos=self.pos, size=self.size)
-        self.bind(pos=self._upd_bg, size=self._upd_bg)
-
-        saved = app_state.get_sorted_users(); hu = len(saved) > 0
-        card_h = dp(560) if hu else dp(420)
-
-        card = GradientCard(padding=[dp(24), dp(24)],
-            size_hint=(0.95, None), height=card_h,
-            pos_hint={'center_x': 0.5, 'center_y': 0.5})
-
-        tl = Label(text='NEUROMENTOR',
-            font_size=theme.font(theme.FONT_TITLE_MEDIUM),
-            bold=True, color=theme.GOLD,
-            size_hint_y=None, height=sp(46), halign='center', valign='middle')
-        tl.text_size = (None, None); card.add_widget(tl)
-
-        sl = Label(text='Multi-User Brain Computer Interface System',
-            font_size=theme.font(theme.FONT_BODY_SMALL),
-            color=theme.TEXT_MUTED, italic=True,
-            size_hint_y=None, halign='center', valign='middle')
-        sl.bind(texture_size=lambda inst, sz: setattr(inst, 'height', max(sz[1], dp(22))))
-        card.add_widget(sl)
-        card.add_widget(Label(size_hint_y=None, height=dp(10)))
-
+        self._app_state=app_state; self._on_login=on_login
+        with self.canvas.before: Color(*theme.BG_DARK); self._bg=Rectangle(pos=self.pos,size=self.size)
+        self.bind(pos=lambda*a:setattr(self._bg,'pos',self.pos),
+                  size=lambda*a:setattr(self._bg,'size',self.size))
+        saved=app_state.get_sorted_users(); hu=len(saved)>0
+        card_h=dp(580) if hu else dp(440)
+        card=GradientCard(padding=[dp(30),dp(30)],size_hint=(0.95,None),height=card_h,
+                          pos_hint={'center_x':0.5,'center_y':0.5})
+        # Top padding
+        card.add_widget(Label(size_hint_y=None,height=dp(20)))
+        title=Label(text='NEUROMENTOR',font_size=theme.font(theme.FONT_TITLE_MEDIUM),
+                    bold=True,color=theme.GOLD,size_hint_y=None,height=sp(50),
+                    halign='center',valign='middle')
+        title.text_size=(None,None); card.add_widget(title)
+        sub=Label(text='Multi-User Brain Computer Interface System',font_size=theme.font(theme.FONT_BODY_SMALL),color=theme.TEXT_MUTED,italic=True,size_hint_y=None,height=25)
+        card.add_widget(sub); card.add_widget(Label(size_hint_y=None,height=12))
         if hu:
-            pl = Label(text='PREVIOUS USERS',
-                font_size=theme.font(theme.FONT_HEADING_LARGE),
-                bold=True, color=theme.TEXT_PRIMARY,
-                size_hint_y=None, halign='left', valign='middle')
-            pl.bind(size=pl.setter('text_size'),
-                    texture_size=lambda inst, sz: setattr(inst, 'height', max(sz[1], dp(24))))
-            card.add_widget(pl)
-            card.add_widget(Label(size_hint_y=None, height=dp(6)))
-            ts = ScrollView(size_hint_y=None, height=dp(95),
-                            do_scroll_x=True, do_scroll_y=False)
-            tr = BoxLayout(orientation='horizontal', spacing=dp(12), size_hint_x=None)
+            pl=Label(text='PREVIOUS USERS',font_size=theme.font(theme.FONT_HEADING_LARGE),bold=True,color=theme.TEXT_PRIMARY,size_hint_y=None,height=28,halign='left',valign='middle')
+            pl.bind(size=pl.setter('text_size')); card.add_widget(pl)
+            card.add_widget(Label(size_hint_y=None,height=8))
+            ts=ScrollView(size_hint_y=None,height=dp(95),do_scroll_x=True,do_scroll_y=False)
+            tr=BoxLayout(orientation='horizontal',spacing=12,size_hint_x=None)
             tr.bind(minimum_width=tr.setter('width'))
-            for u in saved:
-                tr.add_widget(UserTile(username=u.username, on_select=self._quick_login))
-            ts.add_widget(tr); card.add_widget(ts)
-            card.add_widget(Label(size_hint_y=None, height=dp(8)))
-            div = Widget(size_hint_y=None, height=dp(1))
-            with div.canvas:
-                Color(*theme.rgba_hex('#334155')); div._l = Rectangle(pos=div.pos, size=div.size)
-            div.bind(pos=lambda inst, v: setattr(inst._l, 'pos', v),
-                     size=lambda inst, v: setattr(inst._l, 'size', v))
+            for u in saved: tr.add_widget(UserTile(username=u.username,on_select=self._quick_login))
+            ts.add_widget(tr); card.add_widget(ts); card.add_widget(Label(size_hint_y=None,height=8))
+            div=Widget(size_hint_y=None,height=dp(1))
+            with div.canvas: Color(*theme.rgba_hex('#334155')); div._l=Rectangle(pos=div.pos,size=div.size)
+            div.bind(pos=lambda inst,v:setattr(inst._l,'pos',v),size=lambda inst,v:setattr(inst._l,'size',v))
             card.add_widget(div)
-            ol = Label(text='OR SIGN IN AS NEW USER', font_size=sp(11),
-                color=theme.rgba_hex('#64748b'), size_hint_y=None,
-                height=dp(24), halign='center', valign='middle')
+            ol=Label(text='OR SIGN IN AS NEW USER',font_size=sp(11),color=theme.rgba_hex('#64748b'),size_hint_y=None,height=24,halign='center',valign='middle')
             ol.bind(size=ol.setter('text_size')); card.add_widget(ol)
         else:
-            il = Label(text='Enter your username to login or create a new profile.',
-                font_size=theme.font(theme.FONT_BODY_SMALL),
-                color=theme.TEXT_SECONDARY, halign='center', valign='middle',
-                size_hint_y=None)
-            il.bind(texture_size=lambda inst, sz: setattr(inst, 'height', max(sz[1], dp(40))))
-            card.add_widget(il)
-
-        ul = Label(text='USERNAME', font_size=theme.font(theme.FONT_BODY_SMALL),
-            color=theme.GOLD, bold=True, size_hint_y=None, halign='left', valign='middle')
-        ul.bind(texture_size=lambda inst, sz: setattr(inst, 'height', max(sz[1], dp(18))))
-        card.add_widget(ul)
-
-        self._username_input = TextInput(hint_text='Enter your username',
-            font_size=theme.font(theme.FONT_BODY_REGULAR),
-            multiline=False, size_hint_y=None, height=dp(44),
-            background_color=theme.INPUT_BG, foreground_color=theme.TEXT_PRIMARY,
-            hint_text_color=theme.TEXT_MUTED, cursor_color=theme.TEAL,
-            padding=[dp(12), dp(10)])
-        self._username_input.bind(on_text_validate=lambda *a: self._login())
-        card.add_widget(self._username_input)
-
-        self._error_lbl = Label(text='',
-            font_size=theme.font(theme.FONT_BODY_SMALL), color=theme.RED,
-            size_hint_y=None, halign='left', valign='middle')
-        self._error_lbl.bind(texture_size=lambda inst, sz: setattr(inst, 'height', max(sz[1], dp(16))))
-        card.add_widget(self._error_lbl)
-
-        lb = ShadowButton(text='ENTER SYSTEM',
-            font_size=theme.font(theme.FONT_BODY_REGULAR), bold=True,
-            size_hint_y=None, height=dp(44),
-            background_color=theme.GOLD, color=(0, 0, 0, 1))
-        lb.bind(on_press=lambda *a: self._login())
-        card.add_widget(lb)
+            info=Label(text='Enter your username to login or create a new profile.\nEach user has isolated data and trained models.',font_size=theme.font(theme.FONT_BODY_SMALL),color=theme.TEXT_SECONDARY,halign='center',valign='middle',size_hint_y=None,height=50)
+            info.bind(size=info.setter('text_size')); card.add_widget(info)
+        ul=Label(text='USERNAME',font_size=theme.font(theme.FONT_BODY_SMALL),color=theme.GOLD,bold=True,size_hint_y=None,height=20,halign='left',valign='middle')
+        ul.bind(size=ul.setter('text_size')); card.add_widget(ul)
+        self._ui=TextInput(hint_text='Enter your username',font_size=theme.font(theme.FONT_BODY_REGULAR),multiline=False,halign='left',size_hint_x=1,size_hint_y=None,height=40,background_color=theme.INPUT_BG,foreground_color=theme.TEXT_PRIMARY,hint_text_color=theme.TEXT_MUTED,cursor_color=theme.TEAL,padding=[10,10])
+        self._ui.bind(on_text_validate=lambda*a:self._login()); card.add_widget(self._ui)
+        self._el=Label(text='',font_size=theme.font(theme.FONT_BODY_SMALL),color=theme.RED,size_hint_y=None,height=20,halign='left',valign='middle')
+        self._el.bind(size=self._el.setter('text_size')); card.add_widget(self._el)
+        lb=ShadowButton(text='ENTER SYSTEM',font_size=theme.font(theme.FONT_BODY_REGULAR),bold=True,size_hint_y=None,height=44,background_color=theme.GOLD,color=(0,0,0,1))
+        lb.bind(on_press=lambda*a:self._login()); card.add_widget(lb)
         self.add_widget(card)
-
-    def _upd_bg(self, *a): self._bg.pos = self.pos; self._bg.size = self.size
-
-    def _quick_login(self, username):
-        self._app_state.login(username)
-        if self._on_login: self._on_login()
-
+    def _quick_login(self,username): self._app_state.login(username); (self._on_login() if self._on_login else None)
     def _login(self):
-        u = self._username_input.text.strip()
-        if not u: self._error_lbl.text = 'Username cannot be empty'; return
-        if not re.match(r'^[a-zA-Z0-9_]+$', u):
-            self._error_lbl.text = 'Letters, numbers, underscores only'; return
-        self._error_lbl.text = ''
-        self._app_state.login(u)
-        if self._on_login: self._on_login()
+        u=self._ui.text.strip()
+        if not u: self._el.text='Username cannot be empty'; return
+        if not re.match(r'^[a-zA-Z0-9_]+$',u): self._el.text='Letters, numbers, underscores only'; return
+        self._el.text=''; self._app_state.login(u); (self._on_login() if self._on_login else None)
 
 
-# ============================================================
-# Page registry
-# ============================================================
-PAGE_NAMES = [
-    'DASHBOARD',
-    'PROFILE',
-    'CALIBRATE',
-    'RANDOM FOREST',
-    'LIVE FEED',
-    'VOICE ASSISTANT',
-    'PHASE 2 INSIGHTS',
-]
-SIDEBAR_WIDTH = dp(240)
+# ════════════════════════════════════════════════════════════════════════
+# Page registry  — VOICE ASSISTANT and PHASE 2 INSIGHTS removed from menu
+# ════════════════════════════════════════════════════════════════════════
+PAGE_NAMES     = ['DASHBOARD', 'PROFILE', 'CALIBRATE', 'RANDOM FOREST', 'LIVE FEED', 'TRANSCRIBER']
+SIDEBAR_WIDTH  = dp(240)
 
 
-# ============================================================
+# ════════════════════════════════════════════════════════════════════════
 # MainShell
-# ============================================================
+# ════════════════════════════════════════════════════════════════════════
 class MainShell(FloatLayout):
     sidebar_open = BooleanProperty(False)
 
@@ -2682,87 +1557,86 @@ class MainShell(FloatLayout):
         super().__init__(**kwargs)
         self._app_state = app_state; self._on_logout = on_logout
         self._screens = {}; self._current_screen = None
+
         with self.canvas.before:
-            Color(*theme.BG_DARK)
-            self._bg = Rectangle(pos=self.pos, size=self.size)
-        self.bind(pos=self._upd_bg, size=self._upd_bg)
+            Color(*theme.BG_DARK); self._bg = Rectangle(pos=self.pos, size=self.size)
+        self.bind(pos=lambda*a: setattr(self._bg,'pos',self.pos),
+                  size=lambda*a: setattr(self._bg,'size',self.size))
 
-        self._main_column = BoxLayout(orientation='vertical')
+        # ── Main column ────────────────────────────────────────────────
+        self._main_col = BoxLayout(orientation='vertical')
 
-        # Top bar
-        top = BoxLayout(size_hint_y=None, height=dp(56), padding=[dp(15), 0], spacing=dp(10))
+        # Top bar — height=70dp to give the burger button ample space
+        top = BoxLayout(size_hint_y=None, height=dp(70), padding=[dp(12),0,dp(12),0], spacing=dp(10))
         with top.canvas.before:
-            Color(*theme.SIDEBAR_BG); top._bg = Rectangle(pos=top.pos, size=top.size)
-            Color(*theme.SIDEBAR_BORDER); top._br = Rectangle(pos=top.pos, size=(1, 1))
+            Color(*theme.SIDEBAR_BG); top._bg=Rectangle(pos=top.pos,size=top.size)
+            Color(*theme.SIDEBAR_BORDER); top._bd=Rectangle(pos=top.pos,size=(1,1))
+        def _utt(inst,v):
+            inst._bg.pos=inst.pos; inst._bg.size=inst.size
+            inst._bd.pos=(inst.x,inst.y); inst._bd.size=(inst.width,1)
+        top.bind(pos=_utt,size=_utt)
 
-        def _utt(inst, v):
-            inst._bg.pos = inst.pos; inst._bg.size = inst.size
-            inst._br.pos = (inst.x, inst.y); inst._br.size = (inst.width, 1)
-        top.bind(pos=_utt, size=_utt)
-
-        self._menu_btn = MenuBurgerButton(size_hint=(None, None), size=(dp(45), dp(40)),
+        # Burger button: 56×56dp — large, clearly visible on phone
+        self._menu_btn = MenuBurgerButton(
+            size_hint=(None, None), size=(dp(56), dp(56)),
             pos_hint={'center_y': 0.5}, color=theme.GOLD)
         self._menu_btn.bind(on_press=lambda *a: self._toggle_sidebar())
         top.add_widget(self._menu_btn)
 
-        title_lbl = Label(text='NEUROMENTOR',
-            font_size=theme.font(theme.FONT_HEADING_MEDIUM),
-            bold=True, color=theme.GOLD, size_hint_x=None, width=dp(200),
-            halign='left', valign='middle')
-        title_lbl.bind(size=title_lbl.setter('text_size')); top.add_widget(title_lbl)
+        title_lbl = Label(text='NEUROMENTOR', font_size=theme.font(theme.FONT_HEADING_MEDIUM),
+                          bold=True, color=theme.GOLD, size_hint_x=None, width=dp(200),
+                          halign='left', valign='middle')
+        title_lbl.bind(size=title_lbl.setter('text_size'))
+        top.add_widget(title_lbl)
         top.add_widget(Label())
 
-        self._page_indicator = Label(text='',
-            font_size=theme.font(theme.FONT_BODY_SMALL), color=theme.TEXT_MUTED,
-            size_hint_x=None, width=dp(140), halign='right', valign='middle')
-        self._page_indicator.bind(size=self._page_indicator.setter('text_size'))
-        top.add_widget(self._page_indicator)
-        self._main_column.add_widget(top)
+        self._page_ind = Label(text='', font_size=theme.font(theme.FONT_BODY_SMALL),
+                               color=theme.TEXT_MUTED, size_hint_x=None, width=dp(140),
+                               halign='right', valign='middle')
+        self._page_ind.bind(size=self._page_ind.setter('text_size'))
+        top.add_widget(self._page_ind)
+        self._main_col.add_widget(top)
 
-        self._screen_area = ScreenManager()
-        self._main_column.add_widget(self._screen_area)
-        self.add_widget(self._main_column)
+        # Screen area — uses ScreenManager for proper z-order
+        self._sm = ScreenManager(); self._main_col.add_widget(self._sm)
+        self.add_widget(self._main_col)
 
+        # ── Backdrop ────────────────────────────────────────────────────
         self._backdrop = _Backdrop(on_tap=self._close_sidebar)
-        self._backdrop.opacity = 0; self.add_widget(self._backdrop)
+        self._backdrop.opacity = 0
+        self.add_widget(self._backdrop)
 
+        # ── Sidebar ─────────────────────────────────────────────────────
         self._sidebar = SidebarNavigation(
             app_state=app_state,
             on_item_selected=self._close_sidebar,
             on_switch_user=self._handle_switch_user,
             size_hint=(None, 1), width=SIDEBAR_WIDTH)
-        self._sidebar.x = -SIDEBAR_WIDTH; self.add_widget(self._sidebar)
+        self._sidebar.x = -SIDEBAR_WIDTH
+        self.add_widget(self._sidebar)
 
         self._build_screens()
         app_state.bind(selected_page_index=self._on_page_change)
         self._on_page_change()
 
-    def _upd_bg(self, *a): self._bg.pos = self.pos; self._bg.size = self.size
-
     def _build_screens(self):
-        self._screens = {}
-        screen_defs = [
-            (0, 'dashboard',     DashboardScreen(app_state=self._app_state)),
-            (1, 'profile',       ProfileScreen(app_state=self._app_state)),
-            (2, 'calibrate',     CalibrationScreen(app_state=self._app_state)),
-            (3, 'random_forest', RandomForestScreen(app_state=self._app_state)),
-            (4, 'monitoring',    MonitoringScreen(app_state=self._app_state)),
-            (5, 'voice_asst',    Phase2NotesScreen(app_state=self._app_state)),
-            (6, 'phase2_ins',    Phase2InsightsScreen(app_state=self._app_state)),
+        defs = [
+            (0, 'dashboard',  DashboardScreen(app_state=self._app_state)),
+            (1, 'profile',    ProfileScreen(app_state=self._app_state)),
+            (2, 'calibrate',  CalibrationScreen(app_state=self._app_state)),
+            (3, 'rf',         RandomForestScreen(app_state=self._app_state)),
+            (4, 'monitoring', MonitoringScreen(app_state=self._app_state)),
+            (5, 'transcriber',TranscriberScreen(app_state=self._app_state)),
         ]
-        for idx, name, widget in screen_defs:
-            screen = Screen(name=name)
-            screen.add_widget(widget)
-            self._screens[idx] = screen
-            self._screen_area.add_widget(screen)
+        for idx, name, widget in defs:
+            scr = Screen(name=name); scr.add_widget(widget)
+            self._screens[idx] = scr; self._sm.add_widget(scr)
 
     def _on_page_change(self, *a):
         idx = self._app_state.selected_page_index
-        self._page_indicator.text = PAGE_NAMES[idx] if idx < len(PAGE_NAMES) else ''
+        self._page_ind.text = PAGE_NAMES[idx] if idx < len(PAGE_NAMES) else ''
         scr = self._screens.get(idx)
-        if scr:
-            self._screen_area.current = scr.name
-            self._current_screen      = scr
+        if scr: self._sm.current = scr.name; self._current_screen = scr
 
     def _toggle_sidebar(self):
         self._close_sidebar() if self.sidebar_open else self._open_sidebar()
@@ -2770,17 +1644,17 @@ class MainShell(FloatLayout):
     def _open_sidebar(self):
         if self.sidebar_open: return
         self.sidebar_open = True
-        Animation(opacity=1, duration=0.25, t='out_quad').start(self._backdrop)
+        Animation(opacity=1, duration=0.2, t='out_quad').start(self._backdrop)
         self._backdrop.active = True
-        Animation(x=self.x, duration=0.25, t='out_quad').start(self._sidebar)
+        Animation(x=self.x, duration=0.2, t='out_quad').start(self._sidebar)
         self._menu_btn.set_open(True)
 
     def _close_sidebar(self, *a):
         if not self.sidebar_open: return
         self.sidebar_open = False
-        Animation(opacity=0, duration=0.25, t='out_quad').start(self._backdrop)
+        Animation(opacity=0, duration=0.2, t='out_quad').start(self._backdrop)
         self._backdrop.active = False
-        Animation(x=self.x - SIDEBAR_WIDTH, duration=0.25, t='out_quad').start(self._sidebar)
+        Animation(x=self.x - SIDEBAR_WIDTH, duration=0.2, t='out_quad').start(self._sidebar)
         self._menu_btn.set_open(False)
 
     def _handle_switch_user(self):
@@ -2791,15 +1665,11 @@ class MainShell(FloatLayout):
 
 class _Backdrop(Widget):
     active = BooleanProperty(False)
-
     def __init__(self, on_tap=None, **kwargs):
-        super().__init__(**kwargs)
-        self._on_tap = on_tap
-        with self.canvas:
-            Color(0, 0, 0, 0.5); self._rect = Rectangle(pos=self.pos, size=self.size)
-        self.bind(pos=lambda inst, v: setattr(inst._rect, 'pos', v),
-                  size=lambda inst, v: setattr(inst._rect, 'size', v))
-
+        super().__init__(**kwargs); self._on_tap = on_tap
+        with self.canvas: Color(0,0,0,0.5); self._r=Rectangle(pos=self.pos,size=self.size)
+        self.bind(pos=lambda*a:setattr(self._r,'pos',self.pos),
+                  size=lambda*a:setattr(self._r,'size',self.size))
     def on_touch_down(self, touch):
         if self.active and self.collide_point(*touch.pos):
             if self._on_tap: self._on_tap()
@@ -2810,165 +1680,105 @@ class _Backdrop(Widget):
 class SidebarNavigation(BoxLayout):
     def __init__(self, app_state, on_item_selected=None, on_switch_user=None, **kwargs):
         super().__init__(orientation='vertical', padding=[0, dp(15)], **kwargs)
-        self._app_state        = app_state
+        self._app_state = app_state
         self._on_item_selected = on_item_selected
         self._on_switch_user   = on_switch_user
-
         with self.canvas.before:
-            Color(*theme.SIDEBAR_BG); self._bg = Rectangle(pos=self.pos, size=self.size)
-            Color(*theme.SIDEBAR_BORDER); self._rb = Rectangle(pos=self.pos, size=(1, 1))
-
-        def _usb(inst, v):
-            inst._bg.pos  = inst.pos; inst._bg.size  = inst.size
-            inst._rb.pos  = (inst.x + inst.width - 1, inst.y)
-            inst._rb.size = (1, inst.height)
-        self.bind(pos=_usb, size=_usb)
-
-        logo = Label(text='NEURO\nMENTOR',
-            font_size=theme.font(theme.FONT_TITLE_LARGE), bold=True,
-            color=theme.GOLD, size_hint_y=None, height=dp(80), halign='center')
-        self.add_widget(logo)
-        self.add_widget(Label(size_hint_y=None, height=dp(16)))
-
-        for idx, name in enumerate(PAGE_NAMES):
-            btn = NavShadowButton(text=name, nav_index=idx, app_state=app_state,
-                on_selected=self._on_nav_select)
-            self.add_widget(btn)
-
+            Color(*theme.SIDEBAR_BG); self._bg=Rectangle(pos=self.pos,size=self.size)
+            Color(*theme.SIDEBAR_BORDER); self._rb=Rectangle(pos=self.pos,size=(1,1))
+        def _usb(inst,v):
+            inst._bg.pos=inst.pos; inst._bg.size=inst.size
+            inst._rb.pos=(inst.x+inst.width-1,inst.y); inst._rb.size=(1,inst.height)
+        self.bind(pos=_usb,size=_usb)
+        logo=Label(text='NEURO\nMENTOR',font_size=theme.font(theme.FONT_TITLE_LARGE),bold=True,color=theme.GOLD,size_hint_y=None,height=80,halign='center')
+        self.add_widget(logo); self.add_widget(Label(size_hint_y=None,height=dp(16)))
+        for idx,name in enumerate(PAGE_NAMES):
+            self.add_widget(NavShadowButton(text=name,nav_index=idx,app_state=app_state,on_selected=self._nav))
         self.add_widget(Label())
-
-        sr = BoxLayout(size_hint_y=None, height=dp(25), padding=[dp(15), 0], spacing=dp(8))
-        sl = Label(text='SIGNAL:', font_size=theme.font(theme.FONT_BODY_SMALL),
-            color=theme.TEXT_MUTED, size_hint_x=None, width=dp(80),
-            halign='left', valign='middle')
+        sr=BoxLayout(size_hint_y=None,height=25,padding=[15,0],spacing=8)
+        sl=Label(text='SIGNAL:',font_size=theme.font(theme.FONT_BODY_SMALL),color=theme.TEXT_MUTED,size_hint_x=None,width=80,halign='left',valign='middle')
         sl.bind(size=sl.setter('text_size')); sr.add_widget(sl)
-        sr.add_widget(Label(text='\u25cf', font_size=sp(16),
-            color=(0.2, 0.2, 0.2, 1), size_hint_x=None, width=dp(20)))
-        il = Label(text='IDLE', font_size=theme.font(theme.FONT_BODY_SMALL),
-            color=theme.TEXT_MUTED, halign='left', valign='middle')
-        il.bind(size=il.setter('text_size')); sr.add_widget(il)
-        self.add_widget(sr)
-        self.add_widget(Label(size_hint_y=None, height=dp(10)))
+        sr.add_widget(Label(text='\u25cf',font_size=sp(16),color=(0.2,0.2,0.2,1),size_hint_x=None,width=20))
+        il=Label(text='IDLE',font_size=theme.font(theme.FONT_BODY_SMALL),color=theme.TEXT_MUTED,halign='left',valign='middle')
+        il.bind(size=il.setter('text_size')); sr.add_widget(il); self.add_widget(sr)
+        self.add_widget(Label(size_hint_y=None,height=10))
+        sw=ShadowButton(text='SWITCH USER',font_size=theme.font(theme.FONT_BODY_REGULAR),size_hint_y=None,height=40,background_color=(0.133,0.133,0.133,1),color=theme.TEAL)
+        sw.bind(on_press=lambda*a:self._switch_dialog())
+        srow=BoxLayout(size_hint_y=None,height=55,padding=[15,8]); srow.add_widget(sw); self.add_widget(srow)
 
-        swb = ShadowButton(text='SWITCH USER',
-            font_size=theme.font(theme.FONT_BODY_REGULAR),
-            size_hint_y=None, height=dp(40),
-            background_color=(0.133, 0.133, 0.133, 1), color=theme.TEAL)
-        swb.bind(on_press=lambda *a: self._show_switch_dialog())
-        srow = BoxLayout(size_hint_y=None, height=dp(55), padding=[dp(15), dp(8)])
-        srow.add_widget(swb); self.add_widget(srow)
-
-    def _on_nav_select(self, index):
-        self._app_state.set_selected_page(index)
+    def _nav(self, idx):
+        self._app_state.set_selected_page(idx)
         if self._on_item_selected: self._on_item_selected()
 
-    def _show_switch_dialog(self):
-        cont = BoxLayout(orientation='vertical', padding=dp(10), spacing=dp(10),
-                         size_hint_y=None)
-        cont.bind(minimum_height=cont.setter('height'))
-        msg = Label(text='This will end the current session\nand return to login. Continue?',
-            font_size=theme.font(theme.FONT_BODY_REGULAR),
-            color=theme.TEXT_SECONDARY, halign='center')
-        msg.bind(texture_size=lambda inst, sz: setattr(inst, 'height', max(sz[1], dp(48))))
-        cont.add_widget(msg)
-        br = BoxLayout(size_hint_y=None, height=dp(44), spacing=dp(10))
-        nb = ShadowButton(text='No',  font_size=theme.font(theme.FONT_BODY_REGULAR),
-            background_color=theme.PANEL_BG, color=theme.TEXT_MUTED)
-        yb = ShadowButton(text='Yes', font_size=theme.font(theme.FONT_BODY_REGULAR),
-            background_color=theme.PANEL_BG, color=theme.GOLD)
-        br.add_widget(nb); br.add_widget(yb); cont.add_widget(br)
-        pop = Popup(title='SWITCH USER', title_color=theme.TEXT_PRIMARY,
-            content=cont, size_hint=(None, None), size=(dp(300), dp(200)),
-            background_color=theme.PANEL_BG, auto_dismiss=True)
-        nb.bind(on_press=lambda *a: pop.dismiss())
-
-        def _yes(*a):
-            pop.dismiss()
-            if self._on_switch_user: self._on_switch_user()
-        yb.bind(on_press=_yes)
-        pop.open()
+    def _switch_dialog(self):
+        content=BoxLayout(orientation='vertical',padding=10,spacing=10,size_hint_y=None)
+        content.bind(minimum_height=content.setter('height'))
+        msg=Label(text='This will end the current session\nand return to login. Continue?',font_size=theme.font(theme.FONT_BODY_REGULAR),color=theme.TEXT_SECONDARY,halign='center')
+        msg.bind(size=msg.setter('text_size')); content.add_widget(msg)
+        br=BoxLayout(size_hint_y=None,height=40,spacing=10)
+        nb=ShadowButton(text='No',font_size=theme.font(theme.FONT_BODY_REGULAR),background_color=theme.PANEL_BG,color=theme.TEXT_MUTED)
+        yb=ShadowButton(text='Yes',font_size=theme.font(theme.FONT_BODY_REGULAR),background_color=theme.PANEL_BG,color=theme.GOLD)
+        br.add_widget(nb); br.add_widget(yb); content.add_widget(br)
+        pop=Popup(title='SWITCH USER',title_color=theme.TEXT_PRIMARY,content=content,size_hint=(None,None),size=(320,200),background_color=theme.PANEL_BG,auto_dismiss=True)
+        nb.bind(on_press=lambda*a:pop.dismiss())
+        def _yes(*a): pop.dismiss(); (self._on_switch_user() if self._on_switch_user else None)
+        yb.bind(on_press=_yes); pop.open()
 
 
 class NavShadowButton(BoxLayout):
-    def __init__(self, text, nav_index, app_state, on_selected=None, **kwargs):
-        super().__init__(size_hint_y=None, height=dp(48), padding=[0, dp(2)], **kwargs)
-        self._nav_index  = nav_index
-        self._app_state  = app_state
-        self._on_selected = on_selected
+    def __init__(self,text,nav_index,app_state,on_selected=None,**kwargs):
+        super().__init__(size_hint_y=None,height=48,padding=[0,2],**kwargs)
+        self._ni=nav_index; self._as=app_state; self._os=on_selected
         with self.canvas.before:
-            self._sbc = Color(theme.GOLD[0], theme.GOLD[1], theme.GOLD[2], 0)
-            self._sb  = RoundedRectangle(pos=self.pos, size=self.size, radius=[dp(8)])
-            self._ac  = Color(*theme.GOLD, 0)
-            self._ar  = Rectangle(pos=self.pos, size=(dp(4), 1))
-        self._btn = ShadowButton(text=text,
-            font_size=theme.font(theme.FONT_BODY_REGULAR),
-            halign='left', valign='middle', background_color=theme.TRANSPARENT,
-            color=theme.TEXT_MUTED, padding=[dp(14), 0])
-        self._btn.bind(on_press=lambda *a: self._select())
-        self._btn.bind(size=self._btn.setter('text_size'))
-        self.add_widget(self._btn)
-        app_state.bind(selected_page_index=self._update_style)
-        self.bind(pos=self._upc, size=self._upc)
-        self._update_style()
-
-    def _select(self):
-        if self._on_selected: self._on_selected(self._nav_index)
-
-    def _upc(self, *a):
-        self._sb.pos  = (self.x + dp(8), self.y + dp(2))
-        self._sb.size = (self.width - dp(16), self.height - dp(4))
-        self._ar.pos  = (self.x + dp(8), self.y + dp(2))
-        self._ar.size = (dp(4), self.height - dp(4))
-
-    def _update_style(self, *a):
-        sel = (self._app_state.selected_page_index == self._nav_index)
-        self._btn.color = theme.GOLD if sel else theme.TEXT_MUTED
-        self._btn.bold  = sel
-        self._sbc.rgba  = (theme.GOLD[0], theme.GOLD[1], theme.GOLD[2], 0.1 if sel else 0)
-        self._ac.a      = 1 if sel else 0
-        self._upc()
+            self._sbc=Color(theme.GOLD[0],theme.GOLD[1],theme.GOLD[2],0)
+            self._sb=RoundedRectangle(pos=self.pos,size=self.size,radius=[8])
+            self._ac=Color(*theme.GOLD,0)
+            self._ar=Rectangle(pos=self.pos,size=(4,1))
+        self._btn=ShadowButton(text=text,font_size=theme.font(theme.FONT_BODY_REGULAR),halign='left',valign='middle',background_color=theme.TRANSPARENT,color=theme.TEXT_MUTED,padding=[14,0])
+        self._btn.bind(on_press=lambda*a:(self._os(self._ni) if self._os else None))
+        self._btn.bind(size=self._btn.setter('text_size')); self.add_widget(self._btn)
+        app_state.bind(selected_page_index=self._upd); self.bind(pos=self._upc,size=self._upc); self._upd()
+    def _upc(self,*a):
+        self._sb.pos=(self.x+8,self.y+2); self._sb.size=(self.width-16,self.height-4)
+        self._ar.pos=(self.x+8,self.y+2); self._ar.size=(4,self.height-4)
+    def _upd(self,*a):
+        sel=(self._as.selected_page_index==self._ni)
+        self._btn.color=theme.GOLD if sel else theme.TEXT_MUTED; self._btn.bold=sel
+        self._sbc.rgba=(theme.GOLD[0],theme.GOLD[1],theme.GOLD[2],0.1 if sel else 0)
+        self._ac.a=1 if sel else 0; self._upc()
 
 
-# ============================================================
-# NeuroMentorApp
-# ============================================================
+# ════════════════════════════════════════════════════════════════════════
+# App entry point
+# ════════════════════════════════════════════════════════════════════════
 class NeuroMentorApp(App):
     def build(self):
-        # Android permissions
         if platform == 'android':
             try:
                 from android.permissions import request_permissions, Permission
                 request_permissions([
-                    Permission.BLUETOOTH_SCAN,
-                    Permission.BLUETOOTH_CONNECT,
+                    Permission.BLUETOOTH_SCAN, Permission.BLUETOOTH_CONNECT,
                     Permission.ACCESS_FINE_LOCATION,
-                    Permission.WRITE_EXTERNAL_STORAGE,
-                    Permission.READ_EXTERNAL_STORAGE,
+                    Permission.WRITE_EXTERNAL_STORAGE, Permission.READ_EXTERNAL_STORAGE,
                     Permission.INTERNET,
                 ])
-            except ImportError:
-                pass
+            except ImportError: pass
             try:
                 from jnius import autoclass
-                act = autoclass('org.kivy.android.PythonActivity').mActivity
-                act.setRequestedOrientation(1)
-            except ImportError:
-                pass
+                autoclass('org.kivy.android.PythonActivity').mActivity.setRequestedOrientation(1)
+            except ImportError: pass
 
-        self.title      = 'NeuroMentor'
+        self.title = 'NeuroMentor'
         Window.clearcolor = theme.BG_DARK
-        self.app_state  = AppState()
-
+        self.app_state = AppState()
         self.root_container = FloatLayout()
         self._show_login()
         self.app_state.bind(current_user=self._on_user_change)
         return self.root_container
 
     def _on_user_change(self, *a):
-        if self.app_state.current_user is None:
-            self._show_login()
-        else:
-            self._show_main()
+        if self.app_state.current_user is None: self._show_login()
+        else: self._show_main()
 
     def _show_login(self, *a):
         self.root_container.clear_widgets()
@@ -2980,8 +1790,7 @@ class NeuroMentorApp(App):
         self.root_container.add_widget(
             MainShell(app_state=self.app_state, on_logout=self._show_login))
 
-    def on_stop(self):
-        pass
+    def on_stop(self): pass
 
 
 if __name__ == '__main__':
